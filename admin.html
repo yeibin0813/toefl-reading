@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>리딩 모의고사 관리자</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app"></div>
+<script src="config.js"></script>
+<script src="api.js"></script>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ssGet = k => { try { return sessionStorage.getItem('toefl-admin:' + k); } catch (e) { return null; } };
+const ssSet = (k, v) => { try { v == null ? sessionStorage.removeItem('toefl-admin:' + k) : sessionStorage.setItem('toefl-admin:' + k, v); } catch (e) {} };
+const PART_LABEL = { '0w': 'M1 단어', '0r': 'M1 리딩', '1w': 'M2 단어', '1r': 'M2 리딩' };
+const fmtDate = ms => { const d = new Date(ms); return `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+const fmtTime = s => { s = Math.max(0, Math.round(s || 0)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); };
+
+const S = { pw: ssGet('pw') || '', loggedIn: false, tab: 'results', busy: '', msg: null, settings: null,
+  results: null, filter: 'all', sel: null, onlyWrong: true, tests: null, confirm: null };
+
+const call = (action, body) => api(action, Object.assign({ pw: S.pw }, body || {}));
+function flash(kind, text) { S.msg = { kind, text }; render(); clearTimeout(flash.t); flash.t = setTimeout(() => { S.msg = null; render(); }, 4000); }
+async function run(key, fn) { S.busy = key; render(); try { await fn(); } catch (e) { flash('bad', e.message); } S.busy = ''; render(); }
+
+async function login(pw) {
+  S.pw = pw;
+  await run('login', async () => {
+    const j = await call('adminLogin'); S.settings = j.settings; S.loggedIn = true; ssSet('pw', pw);
+    loadResults(); loadTests();
+  });
+  if (!S.loggedIn) S.pw = '';
+}
+async function loadResults() { await run('results', async () => { S.results = (await call('listResults')).results; }); }
+async function loadTests() { await run('tests', async () => { const j = await call('listTests'); S.tests = j.tests; }); }
+
+/* ---------- 화면 ---------- */
+function topBar() {
+  return `<header class="bar"><div class="wrap"><span class="brand">NEW TOEFL Reading<small>관리자</small></span><span class="spacer"></span>
+    <a class="chip" href="index.html" style="color:inherit;text-decoration:none">학생 페이지 열기</a>
+    ${S.loggedIn ? `<button class="link" data-act="logout">로그아웃</button>` : ''}</div></header>`;
+}
+function viewLogin() {
+  if (!window.API_URL) return `<div class="banner warn">config.js에 서버 주소(API_URL)가 아직 없어요. Apps Script를 배포한 뒤 그 웹 앱 URL을 넣어 주세요.</div>`;
+  return `<form class="sheet form" id="login" style="max-width:380px"><h2>관리자 로그인</h2>
+    <label class="field">비밀번호<input type="password" id="pw" autocomplete="current-password"></label>
+    ${S.msg ? `<div class="banner ${S.msg.kind}">${esc(S.msg.text)}</div>` : ''}
+    <div><button class="btn primary" type="submit"${S.busy ? ' disabled' : ''}>${S.busy ? '확인 중…' : '로그인'}</button></div>
+    <p class="hint">처음 비밀번호는 Apps Script 코드에 적힌 기본값이에요. 로그인한 뒤 설정 탭에서 꼭 바꿔 주세요.</p></form>`;
+}
+function tabs() {
+  const T = [['results', '결과'], ['settings', '설정'], ['tests', '문제']];
+  return `<div class="tabs">${T.map(([k, l]) => `<button class="tab${S.tab === k ? ' on' : ''}" data-act="tab" data-tab="${k}">${l}</button>`).join('')}</div>`;
+}
+
+function viewResults() {
+  if (!S.results) return `<div class="empty">${S.busy === 'results' ? '불러오는 중…' : '기록을 불러오지 못했어요.'}</div>`;
+  const list = S.results.filter(a => S.filter === 'all' || String(a.testId) === S.filter);
+  const testIds = [...new Set(S.results.map(a => a.testId))].sort((a, b) => a - b);
+  const avg = list.length ? (list.reduce((n, a) => n + (a.total ? a.score / a.total : 0), 0) / list.length * 100).toFixed(0) + '%' : '-';
+  const people = new Set(list.map(a => a.name)).size;
+  const sel = S.results.find(a => a.id === S.sel);
+  return `<div class="stack">
+    <div class="toolbar">
+      <select id="filter" aria-label="회차 선택"><option value="all">전체 회차</option>${testIds.map(id => `<option value="${id}"${S.filter === String(id) ? ' selected' : ''}>TEST ${id}</option>`).join('')}</select>
+      <span class="note">응시 <b class="num">${list.length}</b>회 · 학생 <b class="num">${people}</b>명 · 평균 정답률 <b class="num">${avg}</b></span>
+      <span class="spacer"></span>
+      <button class="btn small" data-act="csv"${list.length ? '' : ' disabled'}>CSV 복사</button>
+      <button class="btn small" data-act="reload"${S.busy === 'results' ? ' disabled' : ''}>${S.busy === 'results' ? '불러오는 중…' : '새로고침'}</button>
+    </div>
+    <div class="tablebox">${list.length ? `<table><thead><tr><th>이름</th><th>시험</th><th>제출 시각</th><th>총점</th><th>M1 단어</th><th>M1 리딩</th><th>M2 단어</th><th>M2 리딩</th><th>소요</th><th></th></tr></thead><tbody>
+      ${list.map(a => `<tr class="click${a.id === S.sel ? ' sel' : ''}" data-act="sel" data-id="${esc(a.id)}" tabindex="0">
+        <td>${esc(a.name || '이름 없음')}</td><td>TEST ${esc(a.testId)}</td><td class="num">${fmtDate(a.finishedAt)}</td><td class="num"><b>${a.score}/${a.total}</b></td>
+        ${['0w', '0r', '1w', '1r'].map(k => `<td class="num">${esc(a.parts[k] || '-')}</td>`).join('')}<td class="num">${esc(a.usedText)}</td>
+        <td><button class="btn small danger" data-act="delAsk" data-id="${esc(a.id)}" aria-label="기록 삭제">삭제</button></td></tr>`).join('')}
+      </tbody></table>` : `<div class="empty">아직 제출된 기록이 없어요. 학생이 시험을 끝내면 여기에 나타나요.</div>`}</div>
+    ${sel ? detail(sel) : ''}</div>`;
+}
+function detail(a) {
+  if (!a.rows) return `<div class="banner">이 기록에는 문항별 답안이 없어요.</div>`;
+  const rows = a.rows.filter(x => !S.onlyWrong || !x.ok);
+  return `<section class="stack">
+    <div class="qhead"><h2>${esc(a.name)} · TEST ${esc(a.testId)} 답안</h2><label class="check note"><input type="checkbox" id="onlyWrong" ${S.onlyWrong ? 'checked' : ''}> 틀린 문항만 보기</label></div>
+    <div class="stats">${['0w', '0r', '1w', '1r'].filter(k => a.parts[k]).map(k => `<div class="part"><div class="lbl">${PART_LABEL[k]}</div><div class="val">${esc(a.parts[k])}</div></div>`).join('')}</div>
+    <div class="tablebox">${rows.length ? `<table><thead><tr><th>문항</th><th>유형</th><th></th><th>학생 답</th><th>정답</th></tr></thead><tbody>
+      ${rows.map(x => `<tr class="${x.ok ? '' : 'badrow'}"><td class="num">M${x.mi + 1}-${x.n}</td><td>${x.kind === 'w' ? '단어' : '리딩'}</td><td class="mark ${x.ok ? 'ok' : 'bad'}">${x.ok ? 'O' : 'X'}</td>
+        <td class="given ${x.ok ? '' : (x.given ? 'bad' : 'empty')}">${x.given ? esc(x.given) : '(빈칸)'}</td><td>${x.kind === 'w' ? `${esc(x.correct)} <span class="note">(${esc(x.full)})</span>` : esc(x.correct)}</td></tr>`).join('')}
+      </tbody></table>` : `<div class="empty">틀린 문항이 없어요.</div>`}</div></section>`;
+}
+
+function viewSettings() {
+  const s = S.settings;
+  return `<div class="stack">
+    ${s.pwIsDefault ? `<div class="banner warn">아직 기본 비밀번호를 쓰고 있어요. 아래에서 비밀번호를 바꿔 주세요.</div>` : ''}
+    <form class="sheet form" id="settingsForm"><h2>입장 설정</h2>
+      <label class="field">입장 코드<input type="text" id="code" autocomplete="off" value="${esc(s.code)}" placeholder="예: 1027"></label>
+      <p class="hint">학생이 입장할 때 입력하는 코드예요. 바꾸면 이전 코드는 바로 막혀요. 비워 두면 아무도 입장할 수 없어요.</p>
+      <label class="field">열린 회차<input type="text" id="open" autocomplete="off" value="${esc(s.open)}" placeholder="예: 1-5, 8"></label>
+      <p class="hint">학생에게 보여 줄 회차예요. "1-5"처럼 범위로, "1, 3, 7"처럼 낱개로 적을 수 있어요. 비워 두면 올라온 회차가 모두 열려요.</p>
+      <label class="check"><input type="checkbox" id="showAnswers" ${s.showAnswers ? 'checked' : ''}> 학생 결과 화면에 정답 보여 주기</label>
+      <p class="hint">끄면 학생은 맞고 틀림만 보고, 정답은 볼 수 없어요.</p>
+      <div><button class="btn primary" type="submit"${S.busy === 'settings' ? ' disabled' : ''}>${S.busy === 'settings' ? '저장 중…' : '저장'}</button></div>
+    </form>
+    <form class="sheet form" id="pwForm"><h2>관리자 비밀번호 바꾸기</h2>
+      <label class="field">새 비밀번호<input type="password" id="newPw" autocomplete="new-password"></label>
+      <label class="field">한 번 더<input type="password" id="newPw2" autocomplete="new-password"></label>
+      <div><button class="btn" type="submit"${S.busy === 'pw' ? ' disabled' : ''}>${S.busy === 'pw' ? '바꾸는 중…' : '비밀번호 바꾸기'}</button></div>
+    </form></div>`;
+}
+
+function viewTests() {
+  const list = S.tests;
+  return `<div class="stack">
+    <div class="sheet form"><h2>회차 올리기</h2>
+      <p class="hint">tests.json 파일을 고르면 그 안의 회차가 추가돼요. 이미 있는 회차 번호는 새 내용으로 바뀌어요.</p>
+      <input type="file" id="file" accept=".json,application/json">
+      <div><button class="btn primary" data-act="upload"${S.busy === 'upload' ? ' disabled' : ''}>${S.busy === 'upload' ? '올리는 중…' : '올리기'}</button></div></div>
+    <div class="tablebox">${!list ? `<div class="empty">${S.busy === 'tests' ? '불러오는 중…' : '목록을 불러오지 못했어요.'}</div>` : list.length ? `<table><thead><tr><th>회차</th><th>Module 1</th><th>Module 2</th><th>열림</th><th></th></tr></thead><tbody>
+      ${list.map(t => `<tr><td class="num"><b>TEST ${t.id}</b></td>${t.modules.map(m => `<td>${m.minutes}분 · 단어 ${m.words} · 리딩 ${m.read}</td>`).join('')}<td>${isOpen(t.id) ? '<span class="mark ok">열림</span>' : '<span class="note">닫힘</span>'}</td>
+        <td><button class="btn small danger" data-act="delTestAsk" data-id="${t.id}">삭제</button></td></tr>`).join('')}
+      </tbody></table>` : `<div class="empty">아직 올라온 회차가 없어요. 위에서 tests.json을 올려 주세요.</div>`}</div></div>`;
+}
+function isOpen(id) {
+  const s = (S.settings && S.settings.open || '').trim(); if (!s) return true;
+  return s.split(/[,\s]+/).filter(Boolean).some(p => { const m = p.match(/^(\d+)\s*[-~]\s*(\d+)$/); return m ? id >= +m[1] && id <= +m[2] : +p === id; });
+}
+function viewConfirm() {
+  const c = S.confirm; if (!c) return '';
+  return `<div class="modal" role="dialog" aria-modal="true"><div class="box"><h3>${esc(c.title)}</h3><p class="note" style="margin:0">${esc(c.text)}</p>
+    <div class="row"><button class="btn" data-act="cancel">취소</button><button class="btn danger" data-act="confirmDo">${esc(c.label)}</button></div></div></div>`;
+}
+function render() {
+  const app = document.getElementById('app'), active = document.activeElement && document.activeElement.id;
+  let body;
+  if (!S.loggedIn) body = viewLogin();
+  else body = tabs() + (S.msg ? `<div class="banner ${S.msg.kind}" style="margin-bottom:14px">${esc(S.msg.text)}</div>` : '') +
+    (S.tab === 'results' ? viewResults() : S.tab === 'settings' ? viewSettings() : viewTests());
+  app.innerHTML = topBar() + `<main class="wrap">${body}</main>` + viewConfirm();
+  if (active) { const el = document.getElementById(active); if (el) el.focus(); }
+}
+
+/* ---------- 이벤트 ---------- */
+document.addEventListener('submit', ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  if (f.id === 'login') login(f.querySelector('#pw').value.trim());
+  else if (f.id === 'settingsForm') run('settings', async () => {
+    const j = await call('saveSettings', { settings: { code: f.querySelector('#code').value, open: f.querySelector('#open').value, showAnswers: f.querySelector('#showAnswers').checked } });
+    S.settings = j.settings; flash('ok', '저장했어요.');
+  });
+  else if (f.id === 'pwForm') {
+    const a = f.querySelector('#newPw').value, b = f.querySelector('#newPw2').value;
+    if (a !== b) return flash('bad', '두 비밀번호가 서로 달라요.');
+    run('pw', async () => { await call('changePassword', { newPw: a }); S.pw = a; ssSet('pw', a); S.settings.pwIsDefault = false; flash('ok', '비밀번호를 바꿨어요.'); });
+  }
+});
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-act]'); if (!b) return;
+  const act = b.dataset.act;
+  if (act === 'tab') { S.tab = b.dataset.tab; S.msg = null; render(); }
+  else if (act === 'logout') { S.loggedIn = false; S.pw = ''; ssSet('pw', null); S.results = S.tests = null; render(); }
+  else if (act === 'reload') loadResults();
+  else if (act === 'sel') { S.sel = S.sel === b.dataset.id ? null : b.dataset.id; render(); }
+  else if (act === 'delAsk') { const a = S.results.find(x => x.id === b.dataset.id);
+    S.confirm = { title: '기록을 지울까요?', text: `${a.name} · TEST ${a.testId} · ${a.score}/${a.total} 기록이 시트에서도 지워져요. 되돌릴 수 없어요.`, label: '지우기', fn: () => run('del', async () => { await call('deleteResult', { id: a.id }); S.results = S.results.filter(x => x.id !== a.id); if (S.sel === a.id) S.sel = null; flash('ok', '지웠어요.'); }) }; render(); }
+  else if (act === 'delTestAsk') { const id = +b.dataset.id;
+    S.confirm = { title: `TEST ${id}을 지울까요?`, text: '문제가 시트에서 지워져요. 이미 제출된 결과는 그대로 남아요.', label: '지우기', fn: () => run('delTest', async () => { S.tests = (await call('deleteTest', { id })).tests; flash('ok', `TEST ${id}을 지웠어요.`); }) }; render(); }
+  else if (act === 'cancel') { S.confirm = null; render(); }
+  else if (act === 'confirmDo') { const fn = S.confirm.fn; S.confirm = null; fn(); }
+  else if (act === 'upload') {
+    const inp = document.getElementById('file'), file = inp && inp.files && inp.files[0];
+    if (!file) return flash('bad', '먼저 tests.json 파일을 골라 주세요.');
+    run('upload', async () => {
+      let data; try { data = JSON.parse(await file.text()); } catch (e) { throw new Error('JSON 파일이 아니거나 형식이 깨졌어요.'); }
+      const j = await call('saveTests', { tests: data });
+      S.tests = j.tests; flash('ok', `추가 ${j.added}회차, 갱신 ${j.updated}회차.`);
+    });
+  }
+  else if (act === 'csv') {
+    const list = S.results.filter(a => S.filter === 'all' || String(a.testId) === S.filter);
+    const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+    const csv = [['이름', '시험', '제출 시각', '총점', '만점', 'M1 단어', 'M1 리딩', 'M2 단어', 'M2 리딩', '소요', '틀린 문항'].map(q).join(',')]
+      .concat(list.map(a => [a.name, 'TEST ' + a.testId, fmtDate(a.finishedAt), a.score, a.total, a.parts['0w'], a.parts['0r'], a.parts['1w'], a.parts['1r'], a.usedText, a.wrong].map(q).join(','))).join('\n');
+    navigator.clipboard.writeText(csv).then(() => flash('ok', `${list.length}줄을 복사했어요. 엑셀이나 시트에 붙여 넣으세요.`), () => flash('bad', '복사하지 못했어요. 구글 시트의 결과 탭을 직접 열어 주세요.'));
+  }
+});
+document.addEventListener('keydown', ev => { if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches('tr[data-act="sel"]')) { ev.preventDefault(); ev.target.click(); } });
+document.addEventListener('change', ev => {
+  const el = ev.target;
+  if (el.id === 'filter') { S.filter = el.value; S.sel = null; render(); }
+  else if (el.id === 'onlyWrong') { S.onlyWrong = el.checked; render(); }
+});
+
+render();
+if (S.pw) login(S.pw);
+</script>
+</body>
+</html>

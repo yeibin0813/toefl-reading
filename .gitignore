@@ -1,0 +1,4 @@
+# 문제와 정답 파일은 절대 올리지 않는다
+tests*.json
+*.pdf
+.DS_Store
