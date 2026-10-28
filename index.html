@@ -192,23 +192,26 @@ function viewHome() {
     ${mine}</div>`;
 }
 
-function renderPassage(set, mi) {
-  const ins = set.questions.find(q => q.insert); let i = 0;
+// 시험 화면 한 장: 빈칸은 지문 하나, 리딩은 실제 시험처럼 문제 하나 (지문은 문제마다 같이 보여 준다)
+function pagesOf(m) { return m.sets.flatMap(s => (s.type === 'words' ? [{ s }] : s.questions.map(q => ({ s, q })))); }
+function keysOfPage(mi, p) { return p.q ? [mi + '-' + p.q.n] : keysOfSet(mi, p.s); }
+// 문장 넣기 문제에서만 ■ 자리를 고를 수 있게 하고, 같은 지문의 다른 문제에서는 ■ 표시를 지운다.
+function renderPassage(set, mi, q) {
+  let i = 0;
   const html = set.passage.split(/\n\n/).map(p => {
     let h = esc(p).replace(/\n/g, '<br>');
-    if (ins) h = h.replace(/■/g, () => { const L = LET[i++], k = mi + '-' + ins.n;
-      return `<button class="ins${S.exam.answers[k] === L ? ' on' : ''}" data-act="pick" data-k="${k}" data-v="${L}" aria-label="위치 ${L}">■ ${L}</button>`; });
+    h = q.insert ? h.replace(/■/g, () => { const L = LET[i++], k = mi + '-' + q.n;
+      return `<button class="ins${S.exam.answers[k] === L ? ' on' : ''}" data-act="pick" data-k="${k}" data-v="${L}" aria-label="위치 ${L}">■ ${L}</button>`; })
+      : h.replace(/ ?■ ?/g, ' ').replace(/ {2,}/g, ' ').trim();
     return `<p>${h}</p>`;
   }).join('');
   return `<div class="sheet passage">${set.title ? `<h3>${esc(set.title)}</h3>` : ''}${html}</div>`;
 }
-function renderQuestions(set, mi) {
-  return `<div class="sheet qs">${set.questions.map(q => {
-    const k = mi + '-' + q.n, cur = S.exam.answers[k], choices = q.insert ? LET.map(L => `위치 ■ ${L}`) : q.c;
-    return `<fieldset><legend><span class="num">${q.n}.</span>${q.insert ? '다음 문장이 들어갈 가장 알맞은 위치를 고르세요.' : esc(q.q)}</legend>
-      ${q.insert ? `<div class="insert-sent">${esc(q.insert)}</div>` : ''}
-      ${choices.map((c, ci) => `<label class="opt"><input type="radio" name="q${k}" data-k="${k}" value="${LET[ci]}"${cur === LET[ci] ? ' checked' : ''}><b>(${LET[ci]})</b><span>${esc(c)}</span></label>`).join('')}</fieldset>`;
-  }).join('')}</div>`;
+function renderQuestion(set, mi, q) {
+  const k = mi + '-' + q.n, cur = S.exam.answers[k], choices = q.insert ? LET.map(L => `위치 ■ ${L}`) : q.c;
+  return `<div class="sheet qs"><fieldset><legend><span class="num">${q.n}.</span>${q.insert ? '다음 문장이 들어갈 가장 알맞은 위치를 고르세요.' : esc(q.q)}</legend>
+    ${q.insert ? `<div class="insert-sent">${esc(q.insert)}</div>` : ''}
+    ${choices.map((c, ci) => `<label class="opt"><input type="radio" name="q${k}" data-k="${k}" value="${LET[ci]}"${cur === LET[ci] ? ' checked' : ''}><b>(${LET[ci]})</b><span>${esc(c)}</span></label>`).join('')}</fieldset></div>`;
 }
 function renderWords(set, mi) {
   let i = 0;
@@ -248,21 +251,23 @@ function viewPick() {
     <p class="note" style="margin:0">풀 모듈을 하나 고르세요. 시작 버튼을 누르면 타이머가 바로 돌아가고, 제한 시간이 끝나면 자동으로 제출돼요. 한 모듈을 끝내면 다른 모듈도 이어서 풀 수 있어요.</p>
     <section class="tests">${cards}</section></div>`;
 }
+// e.set은 지금 보는 화면 번호다 (pagesOf 순서).
 function viewExam() {
-  const e = S.exam, m = e.test.modules[e.mod];
-  const set = m.sets[e.set], last = e.set === m.sets.length - 1;
+  const e = S.exam, m = e.test.modules[e.mod], pages = pagesOf(m);
+  const pi = Math.min(e.set || 0, pages.length - 1), p = pages[pi], set = p.s, last = pi === pages.length - 1;
   // 빈칸 모음은 지문이 많아 번호만 보여 주고, 어느 회차·모듈인지는 툴팁으로 알려 준다.
-  const dots = m.sets.map((s, i) => { const done = keysOfSet(e.mod, s).every(k => (e.answers[k] || '').trim());
-    const label = e.kind === 'words' ? `${i + 1}` : rangeOf(s), full = e.kind === 'words' ? `TEST ${s.t} Module ${s.mi + 1} ${rangeOf(s).replace(/^T\d+ /, '')}` : `문제 ${rangeOf(s)}`;
-    return `<button class="dot${done ? ' done' : ''}${i === e.set ? ' cur' : ''}" data-act="go" data-i="${i}" aria-label="${full}" title="${full}">${label}</button>`; }).join('');
-  const body = set.type === 'words' ? renderWords(set, e.mod) : `<div class="split">${renderPassage(set, e.mod)}${renderQuestions(set, e.mod)}</div>`;
+  const dots = pages.map((pg, i) => { const done = keysOfPage(e.mod, pg).every(k => (e.answers[k] || '').trim());
+    const label = e.kind === 'words' ? `${i + 1}` : pg.q ? `${pg.q.n}` : rangeOf(pg.s);
+    const full = e.kind === 'words' ? `TEST ${pg.s.t} Module ${pg.s.mi + 1} ${rangeOf(pg.s).replace(/^T\d+ /, '')}` : `문제 ${label}`;
+    return `<button class="dot${done ? ' done' : ''}${i === pi ? ' cur' : ''}" data-act="go" data-i="${i}" aria-label="${full}" title="${full}">${label}</button>`; }).join('');
+  const body = set.type === 'words' ? renderWords(set, e.mod) : `<div class="split">${renderPassage(set, e.mod, p.q)}${renderQuestion(set, e.mod, p.q)}</div>`;
   const total = m.sets.flatMap(s => keysOfSet(e.mod, s)).length;
-  const where = e.kind === 'words' ? `지문 ${e.set + 1} / ${m.sets.length} · TEST ${set.t} Module ${set.mi + 1} · ${blanksOf(set)[0].n}–${blanksOf(set).slice(-1)[0].n}번`
-    : `Questions ${rangeOf(set)} of ${total}`;
+  const where = e.kind === 'words' ? `지문 ${pi + 1} / ${pages.length} · TEST ${set.t} Module ${set.mi + 1} · ${blanksOf(set)[0].n}–${blanksOf(set).slice(-1)[0].n}번`
+    : p.q ? `Question ${p.q.n} of ${total}` : `Questions ${rangeOf(set)} of ${total}`;
   return `<div class="qhead"><h2>${set.type === 'words' ? 'Fill in the missing letters in the paragraph' : esc(set.kind)}</h2><span class="note num">${where}</span></div>
     ${body}
-    <div class="navrow"><button class="btn" data-act="go" data-i="${e.set - 1}"${e.set === 0 ? ' disabled' : ''}>이전</button><div class="dots">${dots}</div>
-      ${last ? `<button class="btn primary" data-act="askSubmit">${m.name} 제출</button>` : `<button class="btn primary" data-act="go" data-i="${e.set + 1}">다음</button>`}</div>`;
+    <div class="navrow"><button class="btn" data-act="go" data-i="${pi - 1}"${pi === 0 ? ' disabled' : ''}>이전</button><div class="dots">${dots}</div>
+      ${last ? `<button class="btn primary" data-act="askSubmit">${m.name} 제출</button>` : `<button class="btn primary" data-act="go" data-i="${pi + 1}">다음</button>`}</div>`;
 }
 
 function scoreBlock(r) {
@@ -371,7 +376,8 @@ document.addEventListener('change', ev => {
 function updateDots() {
   if (!S.exam) return;
   const m = S.exam.test.modules[S.exam.mod];
-  document.querySelectorAll('.dot').forEach((d, i) => { const s = m.sets[i]; if (s) d.classList.toggle('done', keysOfSet(S.exam.mod, s).every(k => (S.exam.answers[k] || '').trim())); });
+  const pages = pagesOf(m);
+  document.querySelectorAll('.dot').forEach((d, i) => { const p = pages[i]; if (p) d.classList.toggle('done', keysOfPage(S.exam.mod, p).every(k => (S.exam.answers[k] || '').trim())); });
 }
 render();
 </script>
