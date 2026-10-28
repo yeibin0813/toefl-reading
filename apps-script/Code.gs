@@ -38,10 +38,13 @@ const API = {
     checkCode_(r.code);
     const t = loadTest_(r.id);
     if (!t) throw new Error('회차를 찾을 수 없어요.');
-    const g = grade_(t, r.answers || {});
+    // module: 0 또는 1이면 그 모듈만 채점, 없으면 전체
+    const mi = (r.module === 0 || r.module === 1) ? r.module : null;
+    const g = grade_(t, r.answers || {}, mi);
     const id = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const rec = {
-      id, name: clip_(r.name, 60), testId: t.id, finishedAt: Date.now(), used: (r.used || []).map(Number),
+      id, name: clip_(r.name, 60), testId: t.id, module: mi, limit: Math.max(0, Number(r.limit) || 0),
+      finishedAt: Date.now(), used: (r.used || []).map(Number),
       score: g.score, total: g.total, parts: g.parts, rows: g.rows
     };
     appendResult_(rec);
@@ -100,7 +103,9 @@ const API = {
       let detail = null; try { detail = JSON.parse(row[12]); } catch (e) {}
       out.push({
         id: String(row[13]), finishedAt: row[0] instanceof Date ? row[0].getTime() : Number(row[0]) || 0,
-        name: String(row[1]), testId: Number(String(row[2]).replace(/\D/g, '')) || String(row[2]),
+        name: String(row[1]), testId: Number((String(row[2]).match(/TEST (\d+)/) || [])[1]) || String(row[2]),
+        module: detail && (detail.module === 0 || detail.module === 1) ? detail.module : (/ M1$/.test(String(row[2])) ? 0 : / M2$/.test(String(row[2])) ? 1 : null),
+        limit: detail && Number(detail.limit) || 0,
         score: Number(row[3]) || 0, total: Number(row[4]) || 0,
         parts: { '0w': row[5], '0r': row[6], '1w': row[7], '1r': row[8] }, usedText: String(row[9]),
         wrong: String(row[10]), rows: detail && detail.rows || null, used: detail && detail.used || null
@@ -202,9 +207,10 @@ function stripAnswers_(t) {
 }
 
 // ---------- 채점 ----------
-function grade_(t, answers) {
+// only가 0 또는 1이면 그 모듈만 채점한다.
+function grade_(t, answers, only) {
   const rows = [], parts = {};
-  t.modules.forEach((m, mi) => m.sets.forEach(set => {
+  t.modules.forEach((m, mi) => (only != null && mi !== only) ? null : m.sets.forEach(set => {
     if (set.type === 'words') blanks_(set).forEach(b => {
       const k = mi + '-' + b.n, given = String(answers[k] || '').trim().toLowerCase();
       rows.push({ k, mi, n: b.n, kind: 'w', given: String(answers[k] || ''), correct: b.ans, full: b.full, ok: !!given && (given === b.ans || given === b.full.toLowerCase()) });
@@ -223,14 +229,18 @@ function appendResult_(rec) {
   const lock = LockService.getScriptLock(); lock.waitLock(15000);
   try {
     const part = k => rec.parts[k] ? rec.parts[k][0] + '/' + rec.parts[k][1] : '';
-    const used = rec.used.map(s => { s = Math.max(0, Math.round(s || 0)); return Math.floor(s / 60) + '분 ' + (s % 60) + '초'; }).join(' + ');
+    const fmt = s => { s = Math.max(0, Math.round(s || 0)); return Math.floor(s / 60) + '분 ' + (s % 60) + '초'; };
+    // 모듈 하나만 푼 기록: "M1 12분 3초 (제한 18분)" / 전체: "12분 3초 + 8분 0초"
+    const used = rec.module != null
+      ? 'M' + (rec.module + 1) + ' ' + fmt(rec.used[0]) + (rec.limit > 0 ? ' (제한 ' + rec.limit + '분)' : ' (제한 없음)')
+      : rec.used.map(fmt).join(' + ');
     const wrong = rec.rows.filter(x => !x.ok);
     sheet_(SH.results).appendRow([
-      new Date(rec.finishedAt), rec.name, 'TEST ' + rec.testId, rec.score, rec.total,
+      new Date(rec.finishedAt), rec.name, 'TEST ' + rec.testId + (rec.module != null ? ' M' + (rec.module + 1) : ''), rec.score, rec.total,
       part('0w'), part('0r'), part('1w'), part('1r'), used,
       wrong.map(x => 'M' + (x.mi + 1) + '-' + x.n).join(', '),
       clip_(wrong.map(x => 'M' + (x.mi + 1) + '-' + x.n + ': ' + (x.given || '(빈칸)') + ' → ' + (x.kind === 'w' ? x.full : x.correct)).join('; '), 5000),
-      JSON.stringify({ used: rec.used, rows: rec.rows }), rec.id
+      JSON.stringify({ used: rec.used, rows: rec.rows, module: rec.module, limit: rec.limit }), rec.id
     ]);
   } finally { lock.releaseLock(); }
 }

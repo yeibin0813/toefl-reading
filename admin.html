@@ -18,6 +18,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const ssGet = k => { try { return sessionStorage.getItem('toefl-admin:' + k); } catch (e) { return null; } };
 const ssSet = (k, v) => { try { v == null ? sessionStorage.removeItem('toefl-admin:' + k) : sessionStorage.setItem('toefl-admin:' + k, v); } catch (e) {} };
 const PART_LABEL = { '0w': 'M1 단어', '0r': 'M1 리딩', '1w': 'M2 단어', '1r': 'M2 리딩' };
+const modName = mi => (mi === 0 || mi === 1 ? `M${mi + 1}` : '전체');
 const fmtDate = ms => { const d = new Date(ms); return `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const fmtTime = s => { s = Math.max(0, Math.round(s || 0)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); };
 
@@ -73,9 +74,9 @@ function viewResults() {
       <button class="btn small" data-act="csv"${list.length ? '' : ' disabled'}>CSV 복사</button>
       <button class="btn small" data-act="reload"${S.busy === 'results' ? ' disabled' : ''}>${S.busy === 'results' ? '불러오는 중…' : '새로고침'}</button>
     </div>
-    <div class="tablebox">${list.length ? `<table><thead><tr><th>이름</th><th>시험</th><th>제출 시각</th><th>총점</th><th>M1 단어</th><th>M1 리딩</th><th>M2 단어</th><th>M2 리딩</th><th>소요</th><th></th></tr></thead><tbody>
+    <div class="tablebox">${list.length ? `<table><thead><tr><th>이름</th><th>시험</th><th>모듈</th><th>제출 시각</th><th>점수</th><th>M1 단어</th><th>M1 리딩</th><th>M2 단어</th><th>M2 리딩</th><th>소요</th><th></th></tr></thead><tbody>
       ${list.map(a => `<tr class="click${a.id === S.sel ? ' sel' : ''}" data-act="sel" data-id="${esc(a.id)}" tabindex="0">
-        <td>${esc(a.name || '이름 없음')}</td><td>TEST ${esc(a.testId)}</td><td class="num">${fmtDate(a.finishedAt)}</td><td class="num"><b>${a.score}/${a.total}</b></td>
+        <td>${esc(a.name || '이름 없음')}</td><td>TEST ${esc(a.testId)}</td><td>${modName(a.module)}</td><td class="num">${fmtDate(a.finishedAt)}</td><td class="num"><b>${a.score}/${a.total}</b></td>
         ${['0w', '0r', '1w', '1r'].map(k => `<td class="num">${esc(a.parts[k] || '-')}</td>`).join('')}<td class="num">${esc(a.usedText)}</td>
         <td><button class="btn small danger" data-act="delAsk" data-id="${esc(a.id)}" aria-label="기록 삭제">삭제</button></td></tr>`).join('')}
       </tbody></table>` : `<div class="empty">아직 제출된 기록이 없어요. 학생이 시험을 끝내면 여기에 나타나요.</div>`}</div>
@@ -85,7 +86,7 @@ function detail(a) {
   if (!a.rows) return `<div class="banner">이 기록에는 문항별 답안이 없어요.</div>`;
   const rows = a.rows.filter(x => !S.onlyWrong || !x.ok);
   return `<section class="stack">
-    <div class="qhead"><h2>${esc(a.name)} · TEST ${esc(a.testId)} 답안</h2><label class="check note"><input type="checkbox" id="onlyWrong" ${S.onlyWrong ? 'checked' : ''}> 틀린 문항만 보기</label></div>
+    <div class="qhead"><h2>${esc(a.name)} · TEST ${esc(a.testId)} ${modName(a.module)} 답안</h2><label class="check note"><input type="checkbox" id="onlyWrong" ${S.onlyWrong ? 'checked' : ''}> 틀린 문항만 보기</label></div>
     <div class="stats">${['0w', '0r', '1w', '1r'].filter(k => a.parts[k]).map(k => `<div class="part"><div class="lbl">${PART_LABEL[k]}</div><div class="val">${esc(a.parts[k])}</div></div>`).join('')}</div>
     <div class="tablebox">${rows.length ? `<table><thead><tr><th>문항</th><th>유형</th><th></th><th>학생 답</th><th>정답</th></tr></thead><tbody>
       ${rows.map(x => `<tr class="${x.ok ? '' : 'badrow'}"><td class="num">M${x.mi + 1}-${x.n}</td><td>${x.kind === 'w' ? '단어' : '리딩'}</td><td class="mark ${x.ok ? 'ok' : 'bad'}">${x.ok ? 'O' : 'X'}</td>
@@ -167,7 +168,7 @@ document.addEventListener('click', ev => {
   else if (act === 'reload') loadResults();
   else if (act === 'sel') { S.sel = S.sel === b.dataset.id ? null : b.dataset.id; render(); }
   else if (act === 'delAsk') { const a = S.results.find(x => x.id === b.dataset.id);
-    S.confirm = { title: '기록을 지울까요?', text: `${a.name} · TEST ${a.testId} · ${a.score}/${a.total} 기록이 시트에서도 지워져요. 되돌릴 수 없어요.`, label: '지우기', fn: () => run('del', async () => { await call('deleteResult', { id: a.id }); S.results = S.results.filter(x => x.id !== a.id); if (S.sel === a.id) S.sel = null; flash('ok', '지웠어요.'); }) }; render(); }
+    S.confirm = { title: '기록을 지울까요?', text: `${a.name} · TEST ${a.testId} ${modName(a.module)} · ${a.score}/${a.total} 기록이 시트에서도 지워져요. 되돌릴 수 없어요.`, label: '지우기', fn: () => run('del', async () => { await call('deleteResult', { id: a.id }); S.results = S.results.filter(x => x.id !== a.id); if (S.sel === a.id) S.sel = null; flash('ok', '지웠어요.'); }) }; render(); }
   else if (act === 'delTestAsk') { const id = +b.dataset.id;
     S.confirm = { title: `TEST ${id}을 지울까요?`, text: '문제가 시트에서 지워져요. 이미 제출된 결과는 그대로 남아요.', label: '지우기', fn: () => run('delTest', async () => { S.tests = (await call('deleteTest', { id })).tests; flash('ok', `TEST ${id}을 지웠어요.`); }) }; render(); }
   else if (act === 'cancel') { S.confirm = null; render(); }
@@ -184,8 +185,8 @@ document.addEventListener('click', ev => {
   else if (act === 'csv') {
     const list = S.results.filter(a => S.filter === 'all' || String(a.testId) === S.filter);
     const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
-    const csv = [['이름', '시험', '제출 시각', '총점', '만점', 'M1 단어', 'M1 리딩', 'M2 단어', 'M2 리딩', '소요', '틀린 문항'].map(q).join(',')]
-      .concat(list.map(a => [a.name, 'TEST ' + a.testId, fmtDate(a.finishedAt), a.score, a.total, a.parts['0w'], a.parts['0r'], a.parts['1w'], a.parts['1r'], a.usedText, a.wrong].map(q).join(','))).join('\n');
+    const csv = [['이름', '시험', '모듈', '제출 시각', '점수', '만점', 'M1 단어', 'M1 리딩', 'M2 단어', 'M2 리딩', '소요', '틀린 문항'].map(q).join(',')]
+      .concat(list.map(a => [a.name, 'TEST ' + a.testId, modName(a.module), fmtDate(a.finishedAt), a.score, a.total, a.parts['0w'], a.parts['0r'], a.parts['1w'], a.parts['1r'], a.usedText, a.wrong].map(q).join(','))).join('\n');
     navigator.clipboard.writeText(csv).then(() => flash('ok', `${list.length}줄을 복사했어요. 엑셀이나 시트에 붙여 넣으세요.`), () => flash('bad', '복사하지 못했어요. 구글 시트의 결과 탭을 직접 열어 주세요.'));
   }
 });
