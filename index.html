@@ -11,6 +11,8 @@
 </head>
 <body>
 <div id="app"></div>
+<!-- 반 목록은 딕테이션 사이트의 classes.js를 같이 쓴다 (PERIODS). 못 불러오면 반 이름을 직접 입력한다. -->
+<script src="https://yeibin0813.github.io/dictation/classes.js"></script>
 <script src="config.js"></script>
 <script src="api.js"></script>
 <script>
@@ -26,7 +28,15 @@ const PART_LABEL = { '0w': 'M1 Complete the Words', '0r': 'M1 Reading', '1w': 'M
 // S.exam: { test, showAnswers, mod, set, answers, startedAt, limit(분, 0이면 제한 없음), endsAt(제한 없으면 null), used }
 //   빈칸 모아 풀기면 kind: 'words', from, to가 붙고, test는 빈칸 지문만 담은 모듈 하나짜리다.
 //   이때 지문마다 kp("회차-모듈")가 있어 답 키가 "7-0-3"처럼 회차끼리 겹치지 않는다.
-const S = { screen: 'home', name: lsGet(':name') || '', code: lsGet(':code') || '', entered: false, tests: [], pick: null, exam: lsGet(':exam'), result: null, modal: null, busy: '', err: '' };
+const S = { screen: 'home', name: lsGet(':name') || '', code: lsGet(':code') || '', period: lsGet(':period') || '', cls: lsGet(':cls') || '',
+  entered: false, tests: [], pick: null, exam: lsGet(':exam'), result: null, modal: null, busy: '', err: '' };
+// 딕테이션과 같은 반 목록: 기간 → 반 그룹 → 반. 반 값은 "주니어 화목 U반"처럼 그룹 이름을 붙여 저장한다.
+const PERS = typeof PERIODS !== 'undefined' && Array.isArray(PERIODS) ? PERIODS : null;
+function periodNow() {
+  if (!PERS || !PERS.length) return null;
+  const d = new Date(), title = `${d.getFullYear()}년 ${d.getMonth() + 1}월`;
+  return PERS.find(p => p.title === (S.period || title)) || PERS.find(p => p.title === title) || PERS[0];
+}
 const MINE = lsGet(':mine') || [];
 const LIM = lsGet(':lim') || {}; // 모듈별로 마지막에 쓴 제한 시간 ("4-0": 18)
 const WR = lsGet(':wr') || {};   // 빈칸 모아 풀기에서 마지막에 고른 범위와 제한 시간 { from, to, lim }
@@ -37,7 +47,8 @@ const fmtTime = s => { s = Math.max(0, Math.round(s)); return String(Math.floor(
 const fmtDate = ms => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const fmtMin = m => (m % 1 ? `${Math.floor(m)}분 ${Math.round((m % 1) * 60)}초` : `${m}분`);
 const modName = mi => (mi === 0 || mi === 1 ? `Module ${mi + 1}` : mi === 'w' ? '빈칸' : '전체');
-const recLabel = a => (a.practice ? `빈칸 TEST ${a.practice.from}–${a.practice.to}` : `TEST ${a.testId} · ${modName(a.mod)}`);
+const span = p => (p.from === p.to ? `${p.from}` : `${p.from}–${p.to}`);
+const recLabel = a => (a.practice ? `빈칸 TEST ${span(a.practice)}` : `TEST ${a.testId} · ${modName(a.mod)}`);
 const rowLabel = x => (x.t != null ? `T${x.t} ` : '') + `M${x.mi + 1}-${x.n}`;
 
 function blanksOf(set) { const out = []; let i = 0; set.text.replace(BLANK, (a, len) => { out.push({ n: set.start + i++, len: +len }); return a; }); return out; }
@@ -54,13 +65,16 @@ function wordsCount(from, to) {
 /* ---------- 입장 ---------- */
 async function enter() {
   S.err = '';
+  const per = periodNow(); if (per) S.period = per.title;
+  if (!S.cls.trim()) { S.err = '반을 선택해 주세요.'; render(); return; }
   if (!S.name.trim()) { S.err = '이름을 입력해 주세요.'; render(); return; }
   if (!S.code.trim()) { S.err = '입장 코드를 입력해 주세요.'; render(); return; }
   S.busy = 'enter'; render();
   try {
     const j = await api('enter', { code: S.code.trim() });
     S.tests = j.tests; S.entered = true;
-    lsSet(':name', S.name.trim()); lsSet(':code', S.code.trim());
+    S.name = S.name.trim().replace(/\s+/g, ' ');
+    lsSet(':name', S.name); lsSet(':code', S.code.trim()); lsSet(':period', S.period); lsSet(':cls', S.cls.trim());
   } catch (e) { S.err = e.message; }
   S.busy = ''; render();
 }
@@ -86,7 +100,7 @@ async function startWords() {
   try {
     const j = await api('getWords', { code: S.code.trim(), from, to });
     const sets = j.sets.map(s => ({ type: 'words', start: s.start, text: s.text, t: s.t, mi: s.mi, kp: s.t + '-' + s.mi }));
-    S.exam = { kind: 'words', from, to, test: { id: from === to ? `${from}` : `${from}–${to}`, modules: [{ name: '빈칸 모음', sets }] },
+    S.exam = { kind: 'words', from, to, test: { id: span({ from, to }), modules: [{ name: '빈칸 모음', sets }] },
       mod: 0, set: 0, answers: {}, startedAt: Date.now(), limit, endsAt: limit > 0 ? Date.now() + limit * 60000 : null, used: [] };
     persist(); S.pick = null; S.screen = 'exam'; S.busy = ''; render(); window.scrollTo(0, 0);
   } catch (e) { S.err = e.message; S.busy = ''; render(); }
@@ -115,9 +129,10 @@ async function finish() {
   const e = S.exam;
   S.result = { pending: e, status: 'saving' }; S.screen = 'result'; render(); window.scrollTo(0, 0);
   const words = e.kind === 'words';
-  const body = words
-    ? { code: S.code.trim(), from: e.from, to: e.to, limit: e.limit, name: S.name.trim(), answers: e.answers, used: e.used, startedAt: e.startedAt }
-    : { code: S.code.trim(), id: e.test.id, module: e.mod, limit: e.limit, name: S.name.trim(), answers: e.answers, used: e.used, startedAt: e.startedAt };
+  const who = { name: S.name.trim(), period: S.period, cls: S.cls };
+  const body = Object.assign(words
+    ? { code: S.code.trim(), from: e.from, to: e.to, limit: e.limit, answers: e.answers, used: e.used, startedAt: e.startedAt }
+    : { code: S.code.trim(), id: e.test.id, module: e.mod, limit: e.limit, answers: e.answers, used: e.used, startedAt: e.startedAt }, who);
   let j = null, err = '';
   for (let i = 0; i < 3 && !j; i++) {
     try { j = await api(words ? 'submitWords' : 'submit', body); } catch (x) { err = x.message; await new Promise(r => setTimeout(r, 1500)); }
@@ -154,7 +169,7 @@ function topBar() {
       (e.endsAt ? `<span class="timer num" id="timer" aria-label="남은 시간">${fmtTime((e.endsAt - Date.now()) / 1000)}</span>`
         : `<span class="timer num up" id="timer" aria-label="지난 시간" title="제한 시간 없음">${fmtTime((Date.now() - e.startedAt) / 1000)}</span>`);
   } else {
-    mid = `<span class="spacer"></span>` + (S.name && S.entered ? `<span class="chip">${esc(S.name)}</span>` : '') +
+    mid = `<span class="spacer"></span>` + (S.name && S.entered ? `<span class="chip">${esc(S.cls ? S.cls + ' · ' + S.name : S.name)}</span>` : '') +
       (S.screen !== 'home' ? `<button class="link" data-act="home">처음으로</button>` : '');
   }
   return `<header class="bar"><div class="wrap"><span class="brand">NEW TOEFL Reading<small>모의고사</small></span>${mid}</div></header>`;
@@ -163,10 +178,18 @@ function topBar() {
 function viewHome() {
   if (!window.API_URL) return `<div class="banner warn">아직 서버 주소가 설정되지 않았어요. 선생님께 문의하세요.</div>`;
   if (!S.entered) {
+    // 반 선택: 딕테이션 반 목록이 있으면 기간 → 반(그룹별), 없으면 반 이름을 직접 쓴다.
+    const per = periodNow();
+    const clsField = per
+      ? `<label class="field">기간<select id="period">${PERS.map(p => `<option value="${esc(p.title)}"${p === per ? ' selected' : ''}>${esc(p.title)}</option>`).join('')}</select></label>
+        <label class="field">반<select id="cls"><option value="">반을 선택하세요</option>${per.groups.map(g => `<optgroup label="${esc(g.name)}">${g.classes.map(c => {
+          const v = g.name + ' ' + c; return `<option value="${esc(v)}"${v === S.cls ? ' selected' : ''}>${esc(c)}</option>`; }).join('')}</optgroup>`).join('')}</select></label>`
+      : `<label class="field">반<input type="text" id="clsText" placeholder="예: 주니어 화목 U반" value="${esc(S.cls)}"></label>`;
     return `<div class="home">
       <section class="hero"><h1>리딩 모의고사</h1>
-        <p>이름과 선생님께 받은 입장 코드를 입력하면 풀 수 있는 회차가 나와요. 회차를 고른 뒤 Module 1과 Module 2 중 하나를 골라 풀어요.</p></section>
+        <p>반을 고르고 이름과 선생님께 받은 입장 코드를 입력하면 풀 수 있는 회차가 나와요. 회차를 고른 뒤 Module 1과 Module 2 중 하나를 골라 풀어요.</p></section>
       <form class="gate" id="gate">
+        ${clsField}
         <label class="field">이름<input type="text" id="name" autocomplete="name" placeholder="이름" value="${esc(S.name)}"></label>
         <label class="field">입장 코드<input type="text" id="code" inputmode="text" autocomplete="off" placeholder="선생님께 받은 코드" value="${esc(S.code)}"></label>
         ${S.err ? `<div class="banner bad">${esc(S.err)}</div>` : ''}
@@ -188,7 +211,7 @@ function viewHome() {
     ${S.err ? `<div class="banner bad">${esc(S.err)}</div>` : ''}
     ${S.tests.length ? viewWordsCard() : ''}
     ${S.tests.length ? `<section class="tests">${cards}</section>` : `<div class="banner">지금 열려 있는 회차가 없어요. 선생님께 문의하세요.</div>`}
-    <div><button class="btn small" data-act="logout">다른 이름으로 입장</button></div>
+    <div class="toolbar"><span class="note">${esc(S.period ? S.period + ' · ' : '')}${esc(S.cls)} · ${esc(S.name)}</span><button class="btn small" data-act="changeWho">반·이름 바꾸기</button></div>
     ${mine}</div>`;
 }
 
@@ -293,7 +316,7 @@ function viewResult() {
   const r = R.r;
   const limitText = r.limit > 0 ? `제한 ${fmtMin(r.limit)}` : '제한 없음';
   return `<div class="stack">
-    <div class="qhead"><h2>${r.practice ? `빈칸 TEST ${r.practice.from}–${r.practice.to}` : `TEST ${r.testId} · ${modName(r.module)}`} 결과 · ${esc(r.name)}</h2><span class="note num">소요 ${fmtTime(r.used[0] || 0)} (${limitText})</span></div>
+    <div class="qhead"><h2>${r.practice ? `빈칸 TEST ${span(r.practice)}` : `TEST ${r.testId} · ${modName(r.module)}`} 결과 · ${esc(r.name)}</h2><span class="note num">소요 ${fmtTime(r.used[0] || 0)} (${limitText})</span></div>
     ${scoreBlock(r)}
     <div class="banner ok">결과가 선생님께 전달됐어요.</div>
     <div class="toolbar"><label class="check note"><input type="checkbox" id="onlyWrong" ${R.onlyWrong ? 'checked' : ''}> 틀린 문항만 보기</label><span class="spacer"></span>
@@ -331,7 +354,7 @@ document.addEventListener('click', ev => {
   else if (act === 'pick') { S.exam.answers[b.dataset.k] = b.dataset.v; persist(); render(); }
   else if (act === 'pickAgain') { S.screen = 'pick'; S.result = null; S.err = ''; render(); window.scrollTo(0, 0); }
   else if (act === 'home') { S.screen = 'home'; S.result = null; S.pick = null; S.err = ''; render(); }
-  else if (act === 'logout') { S.entered = false; S.tests = []; S.code = ''; lsSet(':code', null); render(); }
+  else if (act === 'changeWho') { S.entered = false; S.tests = []; S.pick = null; S.err = ''; render(); }
   else if (act === 'retry') { S.exam = S.result.pending; finish(); }
 });
 document.addEventListener('contextmenu', ev => { if (document.body.classList.contains('exam-on')) ev.preventDefault(); });
@@ -339,6 +362,7 @@ document.addEventListener('copy', ev => { if (document.body.classList.contains('
 document.addEventListener('input', ev => {
   const el = ev.target;
   if (el.id === 'name') { S.name = el.value; return; }
+  if (el.id === 'clsText') { S.cls = el.value; return; }
   if (el.id === 'code') { S.code = el.value; return; }
   if (el.classList.contains('blank')) {
     el.value = el.value.replace(/[^A-Za-z]/g, '').toLowerCase();
@@ -361,6 +385,8 @@ document.addEventListener('change', ev => {
     document.querySelectorAll(`button.ins[data-k="${el.dataset.k}"]`).forEach(x => x.classList.toggle('on', x.dataset.v === el.value));
     updateDots();
   } else if (el.id === 'onlyWrong') { S.result.onlyWrong = el.checked; render(); }
+  else if (el.id === 'period') { S.period = el.value; S.cls = ''; render(); }
+  else if (el.id === 'cls') { S.cls = el.value; }
   else if (el.id === 'wFrom' || el.id === 'wTo') {
     const r = wordsRange(), v = +el.value;
     if (el.id === 'wFrom') { WR.from = v; WR.to = Math.max(v, r.to); } else { WR.to = v; WR.from = Math.min(v, r.from); }

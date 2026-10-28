@@ -5,7 +5,7 @@
 const SH = { settings: '설정', tests: '문제', results: '결과' };
 const DEFAULT_PW = 'toefl1234';
 const RESULT_HEADERS = ['제출 시각', '이름', '회차', '총점', '만점', 'M1 단어', 'M1 리딩', 'M2 단어', 'M2 리딩',
-  '소요 시간 (M1 + M2)', '틀린 문항', '틀린 답 → 정답', '상세 (JSON)', '기록 ID'];
+  '소요 시간 (M1 + M2)', '틀린 문항', '틀린 답 → 정답', '상세 (JSON)', '기록 ID', '기간', '반'];
 const LET = ['A', 'B', 'C', 'D'];
 
 function doGet() { return json_({ ok: true, message: '서버가 작동 중이에요.' }); }
@@ -43,7 +43,7 @@ const API = {
     const g = grade_(t, r.answers || {}, mi);
     const id = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const rec = {
-      id, name: clip_(r.name, 60), testId: t.id, module: mi, limit: Math.max(0, Number(r.limit) || 0),
+      id, name: clip_(r.name, 60), period: clip_(r.period, 40), cls: clip_(r.cls, 60), testId: t.id, module: mi, limit: Math.max(0, Number(r.limit) || 0),
       finishedAt: Date.now(), used: (r.used || []).map(Number),
       score: g.score, total: g.total, parts: g.parts, rows: g.rows
     };
@@ -65,7 +65,7 @@ const API = {
     const score = rows.filter(x => x.ok).length;
     const rec = {
       id: 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: clip_(r.name, 60),
-      testId: null, practice: { from: Number(r.from), to: Number(r.to) }, module: null, limit: Math.max(0, Number(r.limit) || 0),
+      period: clip_(r.period, 40), cls: clip_(r.cls, 60), testId: null, practice: { from: Number(r.from), to: Number(r.to) }, module: null, limit: Math.max(0, Number(r.limit) || 0),
       finishedAt: Date.now(), used: (r.used || []).map(Number), score, total: rows.length, parts: { w: [score, rows.length] }, rows
     };
     return saveResult_(rec);
@@ -122,7 +122,7 @@ const API = {
       const practice = detail && detail.practice || null;
       out.push({
         id: String(row[13]), finishedAt: row[0] instanceof Date ? row[0].getTime() : Number(row[0]) || 0,
-        name: String(row[1]), practice,
+        name: String(row[1]), practice, period: String(row[14] || ''), cls: String(row[15] || ''),
         testId: practice ? null : Number((String(row[2]).match(/TEST (\d+)/) || [])[1]) || String(row[2]),
         module: detail && (detail.module === 0 || detail.module === 1) ? detail.module : (/ M1$/.test(String(row[2])) ? 0 : / M2$/.test(String(row[2])) ? 1 : null),
         limit: detail && Number(detail.limit) || 0,
@@ -278,16 +278,20 @@ function appendResult_(rec) {
     const used = rec.practice ? '빈칸 ' + fmt(rec.used[0]) + lim
       : rec.module != null ? 'M' + (rec.module + 1) + ' ' + fmt(rec.used[0]) + lim
       : rec.used.map(fmt).join(' + ');
-    const label = rec.practice ? '빈칸 TEST ' + rec.practice.from + '-' + rec.practice.to
+    const label = rec.practice ? '빈칸 TEST ' + rec.practice.from + (rec.practice.to !== rec.practice.from ? '-' + rec.practice.to : '')
       : 'TEST ' + rec.testId + (rec.module != null ? ' M' + (rec.module + 1) : '');
     const where = x => (x.t != null ? 'T' + x.t + ' ' : '') + 'M' + (x.mi + 1) + '-' + x.n;
     const wrong = rec.rows.filter(x => !x.ok);
-    sheet_(SH.results).appendRow([
+    const sheet = sheet_(SH.results);
+    // 기간·반 열은 나중에 생겼다. 예전에 만든 시트면 머리글을 채운다.
+    if (String(sheet.getRange(1, 15).getValue()) !== '기간') sheet.getRange(1, 15, 1, 2).setValues([['기간', '반']]).setFontWeight('bold');
+    sheet.appendRow([
       new Date(rec.finishedAt), rec.name, label, rec.score, rec.total,
       part('0w'), part('0r'), part('1w'), part('1r'), used,
       clip_(wrong.map(where).join(', '), 5000),
       clip_(wrong.map(x => where(x) + ': ' + (x.given || '(빈칸)') + ' → ' + (x.kind === 'w' ? x.full : x.correct)).join('; '), 5000),
-      JSON.stringify({ used: rec.used, rows: rec.rows, module: rec.module, limit: rec.limit, practice: rec.practice || null }), rec.id
+      JSON.stringify({ used: rec.used, rows: rec.rows, module: rec.module, limit: rec.limit, practice: rec.practice || null }), rec.id,
+      rec.period || '', rec.cls || ''
     ]);
   } finally { lock.releaseLock(); }
 }
@@ -306,7 +310,7 @@ function sheet_(name) {
   } else if (name === SH.results) {
     sheet.appendRow(RESULT_HEADERS); sheet.getRange('A:A').setNumberFormat('yyyy-mm-dd hh:mm');
   }
-  sheet.setFrozenRows(1); sheet.getRange(1, 1, 1, 14).setFontWeight('bold');
+  sheet.setFrozenRows(1); sheet.getRange(1, 1, 1, RESULT_HEADERS.length).setFontWeight('bold');
   return sheet;
 }
 // 시트에서 수식으로 해석되지 않도록 앞에 공백을 붙이고 길이를 제한한다.
