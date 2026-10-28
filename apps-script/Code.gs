@@ -47,10 +47,28 @@ const API = {
       finishedAt: Date.now(), used: (r.used || []).map(Number),
       score: g.score, total: g.total, parts: g.parts, rows: g.rows
     };
-    appendResult_(rec);
-    const showAnswers = setting_('정답공개') !== 'N';
-    if (!showAnswers) rec.rows = rec.rows.map(x => ({ k: x.k, mi: x.mi, n: x.n, kind: x.kind, given: x.given, ok: x.ok }));
-    return { result: rec, showAnswers };
+    return saveResult_(rec);
+  },
+  // 빈칸 모아 풀기: from~to 회차 중 열린 회차의 빈칸 지문만 보낸다 (글자 수만).
+  getWords(r) {
+    checkCode_(r.code);
+    const sets = wordsSets_(r.from, r.to);
+    return { sets: sets.map(s => ({ t: s.t, mi: s.mi, start: s.start, text: String(s.text).replace(/\[([a-z]+)\]/g, (a, w) => '[' + w.length + ']') })) };
+  },
+  submitWords(r) {
+    checkCode_(r.code);
+    const sets = wordsSets_(r.from, r.to), answers = r.answers || {}, rows = [];
+    sets.forEach(s => blanks_(s).forEach(b => {
+      const k = s.t + '-' + s.mi + '-' + b.n;
+      rows.push({ k, t: s.t, mi: s.mi, n: b.n, kind: 'w', given: String(answers[k] || ''), correct: b.ans, full: b.full, ok: blankOk_(b, answers[k]) });
+    }));
+    const score = rows.filter(x => x.ok).length;
+    const rec = {
+      id: 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: clip_(r.name, 60),
+      testId: null, practice: { from: Number(r.from), to: Number(r.to) }, module: null, limit: Math.max(0, Number(r.limit) || 0),
+      finishedAt: Date.now(), used: (r.used || []).map(Number), score, total: rows.length, parts: { w: [score, rows.length] }, rows
+    };
+    return saveResult_(rec);
   },
 
   // ---------- 관리자 ----------
@@ -101,9 +119,11 @@ const API = {
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i]; if (!row[13]) continue;
       let detail = null; try { detail = JSON.parse(row[12]); } catch (e) {}
+      const practice = detail && detail.practice || null;
       out.push({
         id: String(row[13]), finishedAt: row[0] instanceof Date ? row[0].getTime() : Number(row[0]) || 0,
-        name: String(row[1]), testId: Number((String(row[2]).match(/TEST (\d+)/) || [])[1]) || String(row[2]),
+        name: String(row[1]), practice,
+        testId: practice ? null : Number((String(row[2]).match(/TEST (\d+)/) || [])[1]) || String(row[2]),
         module: detail && (detail.module === 0 || detail.module === 1) ? detail.module : (/ M1$/.test(String(row[2])) ? 0 : / M2$/.test(String(row[2])) ? 1 : null),
         limit: detail && Number(detail.limit) || 0,
         score: Number(row[3]) || 0, total: Number(row[4]) || 0,
@@ -159,6 +179,17 @@ function openSet_() {
 }
 function isOpen_(id) { const s = openSet_(); return !s || s.has(Number(id)); }
 function openTests_() { return allTests_().filter(t => isOpen_(t.id)); }
+// from~to 회차 중 열린 회차의 빈칸 지문: [{ t, mi, start, text }]
+function wordsSets_(from, to) {
+  from = Number(from); to = Number(to);
+  if (!(from >= 1) || !(to >= from)) throw new Error('회차 범위를 다시 골라 주세요.');
+  const out = [];
+  openTests_().filter(t => t.id >= from && t.id <= to).forEach(t => t.modules.forEach((m, mi) => m.sets.forEach(s => {
+    if (s.type === 'words') out.push({ t: t.id, mi, start: s.start, text: s.text });
+  })));
+  if (!out.length) throw new Error('그 범위에는 열려 있는 회차가 없어요.');
+  return out;
+}
 
 // ---------- 문제 ----------
 function allTests_() {
@@ -212,8 +243,8 @@ function grade_(t, answers, only) {
   const rows = [], parts = {};
   t.modules.forEach((m, mi) => (only != null && mi !== only) ? null : m.sets.forEach(set => {
     if (set.type === 'words') blanks_(set).forEach(b => {
-      const k = mi + '-' + b.n, given = String(answers[k] || '').trim().toLowerCase();
-      rows.push({ k, mi, n: b.n, kind: 'w', given: String(answers[k] || ''), correct: b.ans, full: b.full, ok: !!given && (given === b.ans || given === b.full.toLowerCase()) });
+      const k = mi + '-' + b.n;
+      rows.push({ k, mi, n: b.n, kind: 'w', given: String(answers[k] || ''), correct: b.ans, full: b.full, ok: blankOk_(b, answers[k]) });
     });
     else set.questions.forEach(q => {
       const k = mi + '-' + q.n;
@@ -223,24 +254,40 @@ function grade_(t, answers, only) {
   rows.forEach(r => { const p = parts[r.mi + r.kind] || (parts[r.mi + r.kind] = [0, 0]); p[1]++; if (r.ok) p[0]++; });
   return { rows, parts, score: rows.filter(r => r.ok).length, total: rows.length };
 }
+// 빠진 글자만 써도, 단어 전체를 써도 정답
+function blankOk_(b, raw) {
+  const given = String(raw || '').trim().toLowerCase();
+  return !!given && (given === b.ans || given === b.full.toLowerCase());
+}
 
 // ---------- 결과 ----------
+// 기록을 남기고, 정답을 숨기는 설정이면 학생에게 돌려줄 답안에서 정답을 뺀다.
+function saveResult_(rec) {
+  appendResult_(rec);
+  const showAnswers = setting_('정답공개') !== 'N';
+  if (!showAnswers) rec.rows = rec.rows.map(x => ({ k: x.k, t: x.t, mi: x.mi, n: x.n, kind: x.kind, given: x.given, ok: x.ok }));
+  return { result: rec, showAnswers };
+}
 function appendResult_(rec) {
   const lock = LockService.getScriptLock(); lock.waitLock(15000);
   try {
     const part = k => rec.parts[k] ? rec.parts[k][0] + '/' + rec.parts[k][1] : '';
     const fmt = s => { s = Math.max(0, Math.round(s || 0)); return Math.floor(s / 60) + '분 ' + (s % 60) + '초'; };
-    // 모듈 하나만 푼 기록: "M1 12분 3초 (제한 18분)" / 전체: "12분 3초 + 8분 0초"
-    const used = rec.module != null
-      ? 'M' + (rec.module + 1) + ' ' + fmt(rec.used[0]) + (rec.limit > 0 ? ' (제한 ' + rec.limit + '분)' : ' (제한 없음)')
+    const lim = rec.limit > 0 ? ' (제한 ' + rec.limit + '분)' : ' (제한 없음)';
+    // 빈칸 모음: "빈칸 5분 2초 (제한 없음)" / 모듈 하나: "M1 12분 3초 (제한 18분)" / 전체: "12분 3초 + 8분 0초"
+    const used = rec.practice ? '빈칸 ' + fmt(rec.used[0]) + lim
+      : rec.module != null ? 'M' + (rec.module + 1) + ' ' + fmt(rec.used[0]) + lim
       : rec.used.map(fmt).join(' + ');
+    const label = rec.practice ? '빈칸 TEST ' + rec.practice.from + '-' + rec.practice.to
+      : 'TEST ' + rec.testId + (rec.module != null ? ' M' + (rec.module + 1) : '');
+    const where = x => (x.t != null ? 'T' + x.t + ' ' : '') + 'M' + (x.mi + 1) + '-' + x.n;
     const wrong = rec.rows.filter(x => !x.ok);
     sheet_(SH.results).appendRow([
-      new Date(rec.finishedAt), rec.name, 'TEST ' + rec.testId + (rec.module != null ? ' M' + (rec.module + 1) : ''), rec.score, rec.total,
+      new Date(rec.finishedAt), rec.name, label, rec.score, rec.total,
       part('0w'), part('0r'), part('1w'), part('1r'), used,
-      wrong.map(x => 'M' + (x.mi + 1) + '-' + x.n).join(', '),
-      clip_(wrong.map(x => 'M' + (x.mi + 1) + '-' + x.n + ': ' + (x.given || '(빈칸)') + ' → ' + (x.kind === 'w' ? x.full : x.correct)).join('; '), 5000),
-      JSON.stringify({ used: rec.used, rows: rec.rows, module: rec.module, limit: rec.limit }), rec.id
+      clip_(wrong.map(where).join(', '), 5000),
+      clip_(wrong.map(x => where(x) + ': ' + (x.given || '(빈칸)') + ' → ' + (x.kind === 'w' ? x.full : x.correct)).join('; '), 5000),
+      JSON.stringify({ used: rec.used, rows: rec.rows, module: rec.module, limit: rec.limit, practice: rec.practice || null }), rec.id
     ]);
   } finally { lock.releaseLock(); }
 }

@@ -20,24 +20,36 @@ const lsSet = (k, v) => { try { v == null ? localStorage.removeItem(LS + k) : lo
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const LET = ['A', 'B', 'C', 'D'];
 const BLANK = /\[(\d+)\]/g;
-const PART_LABEL = { '0w': 'M1 Complete the Words', '0r': 'M1 Reading', '1w': 'M2 Complete the Words', '1r': 'M2 Reading' };
+const PART_LABEL = { '0w': 'M1 Complete the Words', '0r': 'M1 Reading', '1w': 'M2 Complete the Words', '1r': 'M2 Reading', w: 'Complete the Words' };
 
 // S.pick: { test(정답 없음), showAnswers } — 회차를 고른 뒤 모듈과 제한 시간을 고르는 화면
 // S.exam: { test, showAnswers, mod, set, answers, startedAt, limit(분, 0이면 제한 없음), endsAt(제한 없으면 null), used }
+//   빈칸 모아 풀기면 kind: 'words', from, to가 붙고, test는 빈칸 지문만 담은 모듈 하나짜리다.
+//   이때 지문마다 kp("회차-모듈")가 있어 답 키가 "7-0-3"처럼 회차끼리 겹치지 않는다.
 const S = { screen: 'home', name: lsGet(':name') || '', code: lsGet(':code') || '', entered: false, tests: [], pick: null, exam: lsGet(':exam'), result: null, modal: null, busy: '', err: '' };
 const MINE = lsGet(':mine') || [];
 const LIM = lsGet(':lim') || {}; // 모듈별로 마지막에 쓴 제한 시간 ("4-0": 18)
+const WR = lsGet(':wr') || {};   // 빈칸 모아 풀기에서 마지막에 고른 범위와 제한 시간 { from, to, lim }
 if (S.exam && S.exam.limit != null) S.screen = 'exam'; else if (S.exam) { S.exam = null; lsSet(':exam', null); }
 const limitOf = (id, mi, m) => (LIM[id + '-' + mi] != null ? LIM[id + '-' + mi] : m.minutes);
 
 const fmtTime = s => { s = Math.max(0, Math.round(s)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); };
 const fmtDate = ms => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const fmtMin = m => (m % 1 ? `${Math.floor(m)}분 ${Math.round((m % 1) * 60)}초` : `${m}분`);
-const modName = mi => (mi === 0 || mi === 1 ? `Module ${mi + 1}` : '전체');
+const modName = mi => (mi === 0 || mi === 1 ? `Module ${mi + 1}` : mi === 'w' ? '빈칸' : '전체');
+const recLabel = a => (a.practice ? `빈칸 TEST ${a.practice.from}–${a.practice.to}` : `TEST ${a.testId} · ${modName(a.mod)}`);
+const rowLabel = x => (x.t != null ? `T${x.t} ` : '') + `M${x.mi + 1}-${x.n}`;
 
 function blanksOf(set) { const out = []; let i = 0; set.text.replace(BLANK, (a, len) => { out.push({ n: set.start + i++, len: +len }); return a; }); return out; }
-function keysOfSet(mi, set) { return set.type === 'words' ? blanksOf(set).map(b => mi + '-' + b.n) : set.questions.map(q => mi + '-' + q.n); }
-function rangeOf(set) { const ns = set.type === 'words' ? blanksOf(set).map(b => b.n) : set.questions.map(q => q.n); return ns.length > 1 ? `${ns[0]}–${ns[ns.length - 1]}` : `${ns[0]}`; }
+const keyPre = (mi, set) => (set.kp != null ? set.kp : mi);
+function keysOfSet(mi, set) { return set.type === 'words' ? blanksOf(set).map(b => keyPre(mi, set) + '-' + b.n) : set.questions.map(q => mi + '-' + q.n); }
+function rangeOf(set) { const ns = set.type === 'words' ? blanksOf(set).map(b => b.n) : set.questions.map(q => q.n); return (set.t != null ? `T${set.t} ` : '') + (ns.length > 1 ? `${ns[0]}–${ns[ns.length - 1]}` : `${ns[0]}`); }
+// 고른 범위 안에서 열린 회차의 빈칸 지문 수와 빈칸 수 (회차 목록의 요약으로 계산)
+function wordsCount(from, to) {
+  const ts = S.tests.filter(t => t.id >= from && t.id <= to);
+  const blanks = ts.reduce((n, t) => n + t.modules.reduce((k, m) => k + m.words, 0), 0);
+  return { tests: ts.length, paras: Math.round(blanks / 10), blanks };
+}
 
 /* ---------- 입장 ---------- */
 async function enter() {
@@ -67,6 +79,24 @@ function startModule(mi) {
   S.exam = { test: t, showAnswers: S.pick.showAnswers, mod: mi, set: 0, answers: {}, startedAt: Date.now(), limit, endsAt: limit > 0 ? Date.now() + limit * 60000 : null, used: [] };
   persist(); S.screen = 'exam'; S.modal = null; render(); window.scrollTo(0, 0);
 }
+// 빈칸 모아 풀기: 고른 범위의 빈칸 지문만 받아 모듈 하나짜리 시험처럼 푼다.
+async function startWords() {
+  const { from, to } = wordsRange(), limit = Math.max(0, Math.min(300, Number(WR.lim) || 0));
+  S.busy = 'words'; S.err = ''; render();
+  try {
+    const j = await api('getWords', { code: S.code.trim(), from, to });
+    const sets = j.sets.map(s => ({ type: 'words', start: s.start, text: s.text, t: s.t, mi: s.mi, kp: s.t + '-' + s.mi }));
+    S.exam = { kind: 'words', from, to, test: { id: from === to ? `${from}` : `${from}–${to}`, modules: [{ name: '빈칸 모음', sets }] },
+      mod: 0, set: 0, answers: {}, startedAt: Date.now(), limit, endsAt: limit > 0 ? Date.now() + limit * 60000 : null, used: [] };
+    persist(); S.pick = null; S.screen = 'exam'; S.busy = ''; render(); window.scrollTo(0, 0);
+  } catch (e) { S.err = e.message; S.busy = ''; render(); }
+}
+function wordsRange() {
+  const ids = S.tests.map(t => t.id);
+  let from = ids.includes(WR.from) ? WR.from : ids[0], to = ids.includes(WR.to) ? WR.to : ids[Math.min(ids.length, 10) - 1];
+  if (to < from) to = from;
+  return { from, to };
+}
 function persist() { lsSet(':exam', S.exam); }
 function goSet(i) { S.exam.set = i; persist(); render(); window.scrollTo(0, 0); }
 function unanswered() {
@@ -84,16 +114,19 @@ function submitModule() {
 async function finish() {
   const e = S.exam;
   S.result = { pending: e, status: 'saving' }; S.screen = 'result'; render(); window.scrollTo(0, 0);
-  const body = { code: S.code.trim(), id: e.test.id, module: e.mod, limit: e.limit, name: S.name.trim(), answers: e.answers, used: e.used, startedAt: e.startedAt };
+  const words = e.kind === 'words';
+  const body = words
+    ? { code: S.code.trim(), from: e.from, to: e.to, limit: e.limit, name: S.name.trim(), answers: e.answers, used: e.used, startedAt: e.startedAt }
+    : { code: S.code.trim(), id: e.test.id, module: e.mod, limit: e.limit, name: S.name.trim(), answers: e.answers, used: e.used, startedAt: e.startedAt };
   let j = null, err = '';
   for (let i = 0; i < 3 && !j; i++) {
-    try { j = await api('submit', body); } catch (x) { err = x.message; await new Promise(r => setTimeout(r, 1500)); }
+    try { j = await api(words ? 'submitWords' : 'submit', body); } catch (x) { err = x.message; await new Promise(r => setTimeout(r, 1500)); }
   }
   if (j) {
     S.exam = null; lsSet(':exam', null);
-    S.pick = { test: e.test, showAnswers: e.showAnswers }; // 같은 회차의 다른 모듈을 바로 풀 수 있게
+    S.pick = words ? null : { test: e.test, showAnswers: e.showAnswers }; // 같은 회차의 다른 모듈을 바로 풀 수 있게
     const r = j.result;
-    MINE.unshift({ testId: r.testId, mod: e.mod, score: r.score, total: r.total, parts: r.parts, finishedAt: r.finishedAt }); lsSet(':mine', MINE.slice(0, 100));
+    MINE.unshift({ testId: r.testId, mod: words ? 'w' : e.mod, practice: r.practice || null, score: r.score, total: r.total, parts: r.parts, finishedAt: r.finishedAt }); lsSet(':mine', MINE.slice(0, 100));
     S.result = { r, showAnswers: j.showAnswers, status: 'ok', onlyWrong: true };
   } else {
     S.result = { pending: e, status: 'fail', err };
@@ -117,7 +150,7 @@ function topBar() {
   let mid = '';
   if (S.screen === 'exam' && S.exam) {
     const e = S.exam, m = e.test.modules[e.mod];
-    mid = `<span class="chip num">TEST ${e.test.id}</span><span class="chip">${m.name}</span><span class="spacer"></span>` +
+    mid = `<span class="chip num">TEST ${esc(e.test.id)}</span><span class="chip">${m.name}</span><span class="spacer"></span>` +
       (e.endsAt ? `<span class="timer num" id="timer" aria-label="남은 시간">${fmtTime((e.endsAt - Date.now()) / 1000)}</span>`
         : `<span class="timer num up" id="timer" aria-label="지난 시간" title="제한 시간 없음">${fmtTime((Date.now() - e.startedAt) / 1000)}</span>`);
   } else {
@@ -147,12 +180,13 @@ function viewHome() {
     <button class="btn primary" data-act="start" data-id="${t.id}"${S.busy ? ' disabled' : ''}>${S.busy === 'start' + t.id ? '불러오는 중…' : `TEST ${t.id} 선택`}</button></article>`).join('');
   const mine = MINE.length ? `<section class="stack"><h2 style="font-size:18px">내 기록 <span class="note" style="font-weight:400">(이 기기에서 푼 것만)</span></h2>
     <div class="tablebox"><table><thead><tr><th>날짜</th><th>시험</th><th>점수</th><th>M1 단어</th><th>M1 리딩</th><th>M2 단어</th><th>M2 리딩</th></tr></thead><tbody>
-    ${MINE.map(a => `<tr><td class="num">${fmtDate(a.finishedAt)}</td><td>TEST ${a.testId} · ${modName(a.mod)}</td><td class="num"><b>${a.score}/${a.total}</b></td>${['0w', '0r', '1w', '1r'].map(k => `<td class="num">${a.parts && a.parts[k] ? a.parts[k].join('/') : '-'}</td>`).join('')}</tr>`).join('')}
+    ${MINE.map(a => `<tr><td class="num">${fmtDate(a.finishedAt)}</td><td>${recLabel(a)}</td><td class="num"><b>${a.score}/${a.total}</b></td>${['0w', '0r', '1w', '1r'].map(k => `<td class="num">${a.parts && a.parts[k] ? a.parts[k].join('/') : '-'}</td>`).join('')}</tr>`).join('')}
     </tbody></table></div></section>` : '';
   return `<div class="home">
     <section class="hero"><h1>${esc(S.name)} 님, 회차를 골라 주세요</h1>
       <p>회차를 고른 뒤 Module 1과 Module 2 중 하나를 골라 풀어요. 빈칸 문제는 빠진 글자만 입력하세요. 끝나면 점수가 선생님께 자동으로 전달돼요.</p></section>
     ${S.err ? `<div class="banner bad">${esc(S.err)}</div>` : ''}
+    ${S.tests.length ? viewWordsCard() : ''}
     ${S.tests.length ? `<section class="tests">${cards}</section>` : `<div class="banner">지금 열려 있는 회차가 없어요. 선생님께 문의하세요.</div>`}
     <div><button class="btn small" data-act="logout">다른 이름으로 입장</button></div>
     ${mine}</div>`;
@@ -178,9 +212,22 @@ function renderQuestions(set, mi) {
 }
 function renderWords(set, mi) {
   let i = 0;
-  const html = esc(set.text).replace(BLANK, (a, len) => { const n = set.start + i++, k = mi + '-' + n;
+  const html = esc(set.text).replace(BLANK, (a, len) => { const n = set.start + i++, k = keyPre(mi, set) + '-' + n;
     return `<input class="blank" id="b${k}" data-k="${k}" data-len="${len}" maxlength="${len}" style="--n:${len}" value="${esc(S.exam.answers[k] || '')}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="빈칸 ${n}, ${len}글자">`; });
   return `<div class="sheet words">${html}</div>`;
+}
+// 빈칸만 모아 풀기: 회차 범위와 제한 시간(기본 0 = 제한 없음)을 고른다.
+function viewWordsCard() {
+  const { from, to } = wordsRange(), c = wordsCount(from, to), lim = Number(WR.lim) || 0;
+  const opts = sel => S.tests.map(t => `<option value="${t.id}"${t.id === sel ? ' selected' : ''}>TEST ${t.id}</option>`).join('');
+  return `<section class="sheet stack wcard">
+    <div><h2 style="font-size:18px">빈칸만 모아 풀기</h2>
+      <p class="note" style="margin:4px 0 0">고른 회차들의 Complete the Words 지문만 이어서 풀어요. 기본은 제한 시간 없이 시계가 지난 시간을 세요.</p></div>
+    <div class="toolbar"><label class="inline">처음 <select id="wFrom" aria-label="처음 회차">${opts(from)}</select></label>
+      <label class="inline">끝 <select id="wTo" aria-label="끝 회차">${opts(to)}</select></label>
+      <span class="note num">${c.tests}회차 · 지문 ${c.paras}개 · 빈칸 ${c.blanks}개</span></div>
+    <label class="field">제한 시간 (분)<span class="inline"><input type="number" class="lim" id="wLim" min="0" max="300" step="1" value="${lim}" aria-label="빈칸 모아 풀기 제한 시간(분)"><span class="note">0이면 제한 없이 풀어요</span></span></label>
+    <div><button class="btn primary" data-act="startWords"${S.busy ? ' disabled' : ''}>${S.busy === 'words' ? '불러오는 중…' : '빈칸 풀기 시작'}</button></div></section>`;
 }
 // 모듈과 제한 시간을 고르는 화면. 제한 시간은 모듈 기본값으로 채워지고, 바꾸면 이 기기에 기억된다. 0이면 제한 없이 푼다.
 function viewPick() {
@@ -203,11 +250,15 @@ function viewPick() {
 function viewExam() {
   const e = S.exam, m = e.test.modules[e.mod];
   const set = m.sets[e.set], last = e.set === m.sets.length - 1;
+  // 빈칸 모음은 지문이 많아 번호만 보여 주고, 어느 회차·모듈인지는 툴팁으로 알려 준다.
   const dots = m.sets.map((s, i) => { const done = keysOfSet(e.mod, s).every(k => (e.answers[k] || '').trim());
-    return `<button class="dot${done ? ' done' : ''}${i === e.set ? ' cur' : ''}" data-act="go" data-i="${i}" aria-label="문제 ${rangeOf(s)}">${rangeOf(s)}</button>`; }).join('');
+    const label = e.kind === 'words' ? `${i + 1}` : rangeOf(s), full = e.kind === 'words' ? `TEST ${s.t} Module ${s.mi + 1} ${rangeOf(s).replace(/^T\d+ /, '')}` : `문제 ${rangeOf(s)}`;
+    return `<button class="dot${done ? ' done' : ''}${i === e.set ? ' cur' : ''}" data-act="go" data-i="${i}" aria-label="${full}" title="${full}">${label}</button>`; }).join('');
   const body = set.type === 'words' ? renderWords(set, e.mod) : `<div class="split">${renderPassage(set, e.mod)}${renderQuestions(set, e.mod)}</div>`;
   const total = m.sets.flatMap(s => keysOfSet(e.mod, s)).length;
-  return `<div class="qhead"><h2>${set.type === 'words' ? 'Fill in the missing letters in the paragraph' : esc(set.kind)}</h2><span class="note num">Questions ${rangeOf(set)} of ${total}</span></div>
+  const where = e.kind === 'words' ? `지문 ${e.set + 1} / ${m.sets.length} · TEST ${set.t} Module ${set.mi + 1} · ${blanksOf(set)[0].n}–${blanksOf(set).slice(-1)[0].n}번`
+    : `Questions ${rangeOf(set)} of ${total}`;
+  return `<div class="qhead"><h2>${set.type === 'words' ? 'Fill in the missing letters in the paragraph' : esc(set.kind)}</h2><span class="note num">${where}</span></div>
     ${body}
     <div class="navrow"><button class="btn" data-act="go" data-i="${e.set - 1}"${e.set === 0 ? ' disabled' : ''}>이전</button><div class="dots">${dots}</div>
       ${last ? `<button class="btn primary" data-act="askSubmit">${m.name} 제출</button>` : `<button class="btn primary" data-act="go" data-i="${e.set + 1}">다음</button>`}</div>`;
@@ -215,13 +266,13 @@ function viewExam() {
 
 function scoreBlock(r) {
   return `<div class="score"><div><div class="eyebrow">총점</div><div class="big">${r.score}<small>/${r.total}</small></div></div>
-    <div class="parts">${['0w', '0r', '1w', '1r'].filter(k => r.parts[k]).map(k => `<div class="part"><div class="lbl">${PART_LABEL[k]}</div><div class="val">${r.parts[k][0]}/${r.parts[k][1]}</div></div>`).join('')}</div></div>`;
+    <div class="parts">${['0w', '0r', '1w', '1r', 'w'].filter(k => r.parts[k]).map(k => `<div class="part"><div class="lbl">${PART_LABEL[k]}</div><div class="val">${r.parts[k][0]}/${r.parts[k][1]}</div></div>`).join('')}</div></div>`;
 }
 function reviewTable(r, onlyWrong, showAnswers) {
   const rows = r.rows.filter(x => !onlyWrong || !x.ok);
   if (!rows.length) return `<div class="tablebox"><div class="empty">틀린 문항이 없어요.</div></div>`;
   return `<div class="tablebox"><table><thead><tr><th>문항</th><th>유형</th><th></th><th>제출한 답</th>${showAnswers ? '<th>정답</th>' : ''}</tr></thead><tbody>
-    ${rows.map(x => `<tr class="${x.ok ? '' : 'badrow'}"><td class="num">M${x.mi + 1}-${x.n}</td><td>${x.kind === 'w' ? '단어' : '리딩'}</td>
+    ${rows.map(x => `<tr class="${x.ok ? '' : 'badrow'}"><td class="num">${rowLabel(x)}</td><td>${x.kind === 'w' ? '단어' : '리딩'}</td>
       <td class="mark ${x.ok ? 'ok' : 'bad'}">${x.ok ? 'O' : 'X'}</td>
       <td class="given ${x.ok ? '' : (x.given ? 'bad' : 'empty')}">${x.given ? esc(x.given) : '(빈칸)'}</td>
       ${showAnswers ? `<td>${x.kind === 'w' ? `${esc(x.correct)} <span class="note">(${esc(x.full)})</span>` : esc(x.correct)}</td>` : ''}</tr>`).join('')}
@@ -236,18 +287,18 @@ function viewResult() {
   const r = R.r;
   const limitText = r.limit > 0 ? `제한 ${fmtMin(r.limit)}` : '제한 없음';
   return `<div class="stack">
-    <div class="qhead"><h2>TEST ${r.testId} · ${modName(r.module)} 결과 · ${esc(r.name)}</h2><span class="note num">소요 ${fmtTime(r.used[0] || 0)} (${limitText})</span></div>
+    <div class="qhead"><h2>${r.practice ? `빈칸 TEST ${r.practice.from}–${r.practice.to}` : `TEST ${r.testId} · ${modName(r.module)}`} 결과 · ${esc(r.name)}</h2><span class="note num">소요 ${fmtTime(r.used[0] || 0)} (${limitText})</span></div>
     ${scoreBlock(r)}
     <div class="banner ok">결과가 선생님께 전달됐어요.</div>
     <div class="toolbar"><label class="check note"><input type="checkbox" id="onlyWrong" ${R.onlyWrong ? 'checked' : ''}> 틀린 문항만 보기</label><span class="spacer"></span>
-      ${S.pick ? `<button class="btn" data-act="pickAgain">TEST ${r.testId} 다른 모듈 풀기</button>` : ''}<button class="btn primary" data-act="home">다른 회차 풀기</button></div>
+      ${S.pick ? `<button class="btn" data-act="pickAgain">TEST ${r.testId} 다른 모듈 풀기</button>` : ''}<button class="btn primary" data-act="home">${r.practice ? '처음 화면으로' : '다른 회차 풀기'}</button></div>
     ${reviewTable(r, R.onlyWrong, R.showAnswers)}</div>`;
 }
 function viewModal() {
   const md = S.modal; if (!md) return '';
   if (md.kind === 'submit') { const n = unanswered(), m = S.exam.test.modules[S.exam.mod];
     return `<div class="modal" role="dialog" aria-modal="true"><div class="box"><h3>${m.name} 답안을 제출할까요?</h3>
-      <p class="note" style="margin:0">${n ? `아직 <b>${n}문제</b>를 풀지 않았어요. ` : ''}제출하면 이 모듈로 다시 돌아올 수 없어요.</p>
+      <p class="note" style="margin:0">${n ? `아직 <b>${n}문제</b>를 풀지 않았어요. ` : ''}제출하면 이 답안으로 다시 돌아올 수 없어요.</p>
       <div class="row"><button class="btn" data-act="closeModal">계속 풀기</button><button class="btn primary" data-act="submit">제출</button></div></div></div>`; }
   return '';
 }
@@ -266,6 +317,7 @@ document.addEventListener('click', ev => {
   const act = b.dataset.act;
   if (act === 'start') startTest(+b.dataset.id);
   else if (act === 'startMod') startModule(+b.dataset.mi);
+  else if (act === 'startWords') startWords();
   else if (act === 'go') goSet(+b.dataset.i);
   else if (act === 'askSubmit') { S.modal = { kind: 'submit' }; render(); }
   else if (act === 'submit') submitModule();
@@ -303,7 +355,14 @@ document.addEventListener('change', ev => {
     document.querySelectorAll(`button.ins[data-k="${el.dataset.k}"]`).forEach(x => x.classList.toggle('on', x.dataset.v === el.value));
     updateDots();
   } else if (el.id === 'onlyWrong') { S.result.onlyWrong = el.checked; render(); }
-  else if (el.classList.contains('lim') && S.pick) {
+  else if (el.id === 'wFrom' || el.id === 'wTo') {
+    const r = wordsRange(), v = +el.value;
+    if (el.id === 'wFrom') { WR.from = v; WR.to = Math.max(v, r.to); } else { WR.to = v; WR.from = Math.min(v, r.from); }
+    lsSet(':wr', WR); render();
+  } else if (el.id === 'wLim') {
+    const v = Math.max(0, Math.min(300, Number(el.value) || 0)); el.value = v;
+    WR.lim = v; lsSet(':wr', WR);
+  } else if (el.classList.contains('lim') && S.pick) {
     const v = Math.max(0, Math.min(120, Number(el.value) || 0)); el.value = v;
     LIM[S.pick.test.id + '-' + el.dataset.mi] = v; lsSet(':lim', LIM);
   }
