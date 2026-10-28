@@ -212,8 +212,9 @@ function renderQuestions(set, mi) {
 }
 function renderWords(set, mi) {
   let i = 0;
-  const html = esc(set.text).replace(BLANK, (a, len) => { const n = set.start + i++, k = keyPre(mi, set) + '-' + n;
-    return `<input class="blank" id="b${k}" data-k="${k}" data-len="${len}" maxlength="${len}" style="--n:${len}" value="${esc(S.exam.answers[k] || '')}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="빈칸 ${n}, ${len}글자">`; });
+  // 앞 글자와 빈칸이 줄바꿈으로 떨어지지 않게 한 단어로 묶는다 ("popul" + 빈칸)
+  const html = esc(set.text).replace(/(\S*?)\[(\d+)\]/g, (a, pre, len) => { const n = set.start + i++, k = keyPre(mi, set) + '-' + n;
+    return `<span class="wd">${pre}<input class="blank" id="b${k}" data-k="${k}" data-len="${len}" maxlength="${len}" style="--n:${len}" value="${esc(S.exam.answers[k] || '')}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="빈칸 ${n}, ${len}글자"></span>`; });
   return `<div class="sheet words">${html}</div>`;
 }
 // 빈칸만 모아 풀기: 회차 범위와 제한 시간(기본 0 = 제한 없음)을 고른다.

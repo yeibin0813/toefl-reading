@@ -95,13 +95,20 @@ tr.sel td { background: var(--accent-soft); }
 .passage p { margin: 0 0 12px; }
 .passage p:last-child { margin-bottom: 0; }
 .words { font-family: var(--font-read); font-size: 18px; line-height: 2.25; }
+.words .wd { white-space: nowrap; }
+/* 빠진 글자 수만큼 밑줄 칸을 따로 그린다 (고정폭 글꼴: 한 칸 = 글자 1ch + 간격 .6ch) */
 input.blank {
-  font-family: var(--font-num); font-size: 16px; color: var(--accent);
-  width: calc(var(--n) * 1.32ch + 10px); padding: 0 4px; margin: 0 1px;
-  border: none; border-bottom: 2px solid var(--muted); border-radius: 0; background: var(--accent-soft);
-  letter-spacing: .32ch; text-transform: lowercase;
+  --cell: 1.6ch;
+  font-family: var(--font-num); font-size: 17px; line-height: 1.4; color: var(--accent);
+  width: calc(var(--n) * var(--cell) + .3ch); padding: 0 0 3px .3ch; margin: 0 2px;
+  border: none; border-radius: 3px 3px 0 0; letter-spacing: .6ch; text-transform: lowercase;
+  background-color: var(--accent-soft);
+  background-image: repeating-linear-gradient(to right, var(--muted) 0 1ch, transparent 1ch var(--cell));
+  background-repeat: no-repeat; background-position: .3ch 100%;
+  background-size: calc(var(--n) * var(--cell) - .6ch) 2px;
 }
-input.blank:focus { outline: none; border-bottom-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--paper)); }
+input.blank:focus { outline: none; background-color: color-mix(in srgb, var(--accent) 18%, var(--paper));
+  background-image: repeating-linear-gradient(to right, var(--accent) 0 1ch, transparent 1ch var(--cell)); }
 .qs { display: grid; gap: 18px; }
 fieldset { border: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 legend { font-weight: 600; padding: 0; margin-bottom: 6px; }
