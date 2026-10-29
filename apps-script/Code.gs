@@ -150,9 +150,9 @@ const API = {
     withLock_(() => deleteRows_(SH.tests, 0, r.id));
     return { tests: allTests_().map(testSummary_) };
   },
-  listLc(r) { checkAdmin_(r); const tests = allLc_(); return { tests: tests.map(lcSummary_), audio: lcAudioStatus_(tests) }; },
+  listLc(r) { checkPw_(r.pw); const tests = allLc_(); return { tests: tests.map(lcSummary_), audio: lcAudioStatus_(tests) }; },
   saveLc(r) {
-    checkAdmin_(r);
+    checkPw_(r.pw);
     const list = Array.isArray(r.tests) ? r.tests : (r.tests && r.tests.tests) || [];
     if (!list.length) throw new Error('추가할 리스닝 회차가 없어요.');
     list.forEach(validateLc_);
@@ -163,7 +163,7 @@ const API = {
       const idx = {}; rows.forEach((row, i) => { if (i) idx[String(row[0])] = i + 1; });
       const fresh = {};
       list.forEach(t => {
-        const line = [t.id, t.set === 'new' ? '새 문제집' : 'TPO', t.no, lcCount_(t), JSON.stringify(t)];
+        const line = [t.id, t.set === 'new' ? '새 문제집' : 'TPO', Number(t.no), lcCount_(t), JSON.stringify(t)];
         if (idx[t.id]) { sheet.getRange(idx[t.id], 1, 1, 5).setValues([line]); updated++; }
         else fresh[t.id] = line;
       });
@@ -173,10 +173,10 @@ const API = {
   },
   // 음원 묶음 하나(<id>_m<k>.json)를 드라이브 "토플 리스닝 음원" 폴더에 저장한다. 같은 이름이 있으면 휴지통으로 보내고 새로 만든다.
   saveAudio(r) {
-    checkAdmin_(r);
+    checkPw_(r.pw);
     const name = String(r.name || '');
     if (!/^(new|tpo)-\d+_m[12]\.json$/.test(name)) throw new Error('음원 파일 이름이 잘못됐어요: ' + name);
-    const folder = lcFolder_(true), old = folder.searchFiles('title = "' + name + '" and trashed = false');
+    const folder = lcFolder_(true), old = folder.searchFiles(ownedQ_(name));
     while (old.hasNext()) old.next().setTrashed(true);
     const f = folder.createFile(name, String(r.data || ''), 'application/json');
     CacheService.getScriptCache().put('lcf:' + name, f.getId(), 21600);
@@ -236,22 +236,6 @@ function setSetting_(key, value) {
 function checkPw_(pw) {
   const real = setting_('관리자비밀번호');
   if (!pw || String(pw) !== real) throw new Error('비밀번호가 맞지 않아요.');
-}
-// 리스닝 회차·음원 올리기는 관리자 비밀번호 대신 임시 올리기 키로도 할 수 있다.
-// 키는 편집기에서 makeUploadKey를 실행하면 3시간짜리로 생기고(실행 로그에 나옴), clearUploadKey로 바로 지울 수 있다.
-function checkAdmin_(r) {
-  if (r.key == null) return checkPw_(r.pw);
-  const v = String(PropertiesService.getScriptProperties().getProperty('uploadKey') || '').split('|');
-  if (!v[0] || String(r.key) !== v[0] || !(Date.now() < Number(v[1]))) throw new Error('올리기 키가 맞지 않거나 만료됐어요.');
-}
-function makeUploadKey() {
-  const k = Utilities.getUuid().replace(/-/g, '');
-  PropertiesService.getScriptProperties().setProperty('uploadKey', k + '|' + (Date.now() + 3 * 3600 * 1000));
-  Logger.log('UPLOADKEY=' + k + ' (3시간 동안 쓸 수 있어요)');
-}
-function clearUploadKey() {
-  PropertiesService.getScriptProperties().deleteProperty('uploadKey');
-  Logger.log('올리기 키를 지웠어요.');
 }
 function checkCode_(code) {
   const real = setting_('입장코드');
@@ -348,6 +332,8 @@ function lcSummary_(t) {
 }
 function validateLc_(t) {
   if (!t || !/^(new|tpo)-\d+$/.test(String(t.id)) || !Array.isArray(t.modules) || !t.modules.length) throw new Error('리스닝 회차 형식이 잘못됐어요 (id, modules 필요).');
+  // 시트 칸에 그대로 들어가는 값은 숫자·정해진 글자만 받는다 (수식이 들어가지 않게)
+  if (!(t.set === 'new' || t.set === 'tpo') || !(Number.isInteger(Number(t.no)) && Number(t.no) > 0) || t.id !== t.set + '-' + Number(t.no)) throw new Error('리스닝 회차 번호가 잘못됐어요: ' + String(t.id).slice(0, 20));
   t.modules.forEach(m => m.items.forEach(it => it.questions.forEach(q => {
     if (!LET.includes(q.a)) throw new Error(t.title + ' ' + m.name + ' ' + q.n + '번: 정답이 A~D가 아니에요.');
   })));
@@ -358,19 +344,17 @@ function stripLc_(t) {
     type: it.type, heading: it.heading, from: it.from, to: it.to, clip: it.audio.split('/').pop().replace(/\.mp3$/, ''), secs: it.secs,
     questions: it.questions.map(q => ({ n: q.n, q: q.q, c: q.c })) })) })) };
 }
-// 드라이브 "토플 리스닝 음원" 폴더. 한 번 찾으면 ID를 기억해 두고 그 폴더만 쓴다.
-// 같은 이름 폴더가 여럿이면(다시 올리다 생긴 것) 파일이 가장 많은 폴더를 고른다. 휴지통에 있는 폴더는 보지 않는다.
-// create면 없을 때 만든다. 동시에 여러 요청이 와도 폴더가 하나만 생기게 잠근 뒤 다시 확인한다.
+// 드라이브 "토플 리스닝 음원" 폴더. 내가 만든(내 소유) 폴더만 쓴다. 남이 같은 이름 폴더를 공유해 와도 쓰지 않는다.
+// 한 번 고른 폴더는 ID를 기억해 두고 계속 쓴다. 같은 이름 폴더가 여럿이면(다시 올리다 생긴 것) 파일이 가장 많은 폴더를 고른다.
+// 휴지통에 있는 폴더는 보지 않는다. create면 없을 때 만든다. 동시에 여러 요청이 와도 폴더가 하나만 생기게 잠근 뒤 다시 확인한다.
 function lcFolder_(create) {
   const props = PropertiesService.getScriptProperties();
-  const known = () => { const id = props.getProperty('lcFolder'); if (!id) return null;
-    try { const f = DriveApp.getFolderById(id); return f.isTrashed() ? null : f; } catch (e) { return null; } };
-  let f = known(); if (f) return f;
   let found = lcFolders_();
+  const known = () => { const id = props.getProperty('lcFolder'); return id && found.find(x => x.getId() === id) || null; };
+  let f = known(); if (f) return f;
   if (!found.length && create) {
     withLock_(() => {
-      f = known(); if (f) return;
-      found = lcFolders_();
+      found = lcFolders_(); f = known(); if (f) return;
       if (!found.length) found = [DriveApp.createFolder(LC_FOLDER)];
     });
     if (f) return f;
@@ -380,13 +364,15 @@ function lcFolder_(create) {
   props.setProperty('lcFolder', f.getId());
   return f;
 }
+// 내 소유이고 휴지통에 없는 것만 찾는 검색어 (name이 없으면 이름 상관없이)
+function ownedQ_(name) { return (name ? "title = '" + name + "' and " : '') + "'me' in owners and trashed = false"; }
 function lcFolders_() {
-  const out = [], it = DriveApp.searchFolders('title = "' + LC_FOLDER + '" and trashed = false');
+  const out = [], it = DriveApp.searchFolders(ownedQ_(LC_FOLDER));
   while (it.hasNext()) out.push(it.next());
   return out;
 }
 function lcNames_(folder) {
-  const names = new Set(), it = folder.searchFiles('trashed = false');
+  const names = new Set(), it = folder.searchFiles(ownedQ_());
   while (it.hasNext()) names.add(it.next().getName());
   return names;
 }
@@ -394,7 +380,7 @@ function lcNames_(folder) {
 function lcFile_(name) {
   const cache = CacheService.getScriptCache(), key = 'lcf:' + name, id = cache.get(key);
   if (id) { try { const f = DriveApp.getFileById(id); if (!f.isTrashed()) return f; } catch (e) {} }
-  const it = lcFolder_(false).searchFiles('title = "' + name + '" and trashed = false');
+  const it = lcFolder_(false).searchFiles(ownedQ_(name));
   let f = null;
   while (it.hasNext()) { const x = it.next(); if (!f || x.getLastUpdated() > f.getLastUpdated()) f = x; }
   if (!f) throw new Error('음원 파일이 아직 없어요 (' + name + '). 선생님께 문의하세요.');
@@ -447,13 +433,15 @@ function blankOk_(b, raw) {
 }
 
 // ---------- 결과 ----------
-// 기록을 남기고, 정답을 숨기는 설정이거나 닫힌 회차면 학생에게 돌려줄 답안에서 정답을 뺀다.
+// 기록을 남기고, 정답을 숨기는 설정이면 학생에게 돌려줄 답안에서 정답을 뺀다.
+// 닫힌 회차(open이 false)면 점수·맞고 틀린 것도 돌려주지 않는다. 맞고 틀린 것만 보여도 A~D를 바꿔 내 보며 정답을 알아낼 수 있어서다.
 // attempt(학생 기기에서 만든 응시 ID)가 같은 제출이 다시 오면(다시 보내기) 새로 기록하지 않고 처음 결과를 돌려준다.
 function saveResult_(rec, attempt, open) {
   const att = String(attempt || '').replace(/[^\w-]/g, '').slice(0, 40), cache = CacheService.getScriptCache();
-  const showAnswers = open !== false && setting_('정답공개') !== 'N';
+  const closed = open === false, showAnswers = !closed && setting_('정답공개') !== 'N';
   // 유형(type)은 정답이 아니라서 남긴다
-  const shown = showAnswers ? rec : Object.assign({}, rec, { rows: rec.rows.map(x => ({ k: x.k, t: x.t, mi: x.mi, n: x.n, kind: x.kind, type: x.type, given: x.given, ok: x.ok })) });
+  const shown = closed ? Object.assign({}, rec, { hidden: true, score: null, parts: {}, rows: [] })
+    : showAnswers ? rec : Object.assign({}, rec, { rows: rec.rows.map(x => ({ k: x.k, t: x.t, mi: x.mi, n: x.n, kind: x.kind, type: x.type, given: x.given, ok: x.ok })) });
   const out = { result: shown, showAnswers };
   let prev = null;
   withLock_(() => {

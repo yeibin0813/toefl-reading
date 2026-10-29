@@ -170,3 +170,5 @@ tr.badrow td { background: var(--bad-soft); }
 @media (prefers-reduced-motion: no-preference) { .opt, .dot, button.ins, .tab { transition: background .12s, border-color .12s, color .12s; } }
 @media print { body { display: none; } }
 .lcexit { border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 8px; }
+.btn.disabled { opacity: .45; pointer-events: none; }
+label.btn { cursor: pointer; }

@@ -52,6 +52,8 @@ const fmtDate = ms => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.
 const fmtMin = m => (m % 1 ? `${Math.floor(m)}분 ${Math.round((m % 1) * 60)}초` : `${m}분`);
 const modName = mi => (mi === 0 || mi === 1 ? `Module ${mi + 1}` : mi === 'w' ? '빈칸' : '전체');
 const span = p => (p.from === p.to ? `${p.from}` : `${p.from}–${p.to}`);
+// 닫힌 회차에 낸 답안은 점수를 돌려받지 않는다 (score가 null)
+const scoreText = a => (a.score == null ? '제출함' : `${a.score}/${a.total}`);
 const recLabel = a => (a.practice ? `빈칸 TEST ${span(a.practice)}` : a.lc ? `리스닝 ${a.lc.title} · ${modName(a.mod)}` : `TEST ${a.testId} · ${modName(a.mod)}`);
 const rowLabel = x => (x.t != null ? `T${x.t} ` : '') + `M${x.mi + 1}-${x.n}`;
 
@@ -207,14 +209,14 @@ function viewHome() {
         <div><button class="btn primary" type="submit"${S.busy ? ' disabled' : ''}>${S.busy === 'enter' ? '확인 중…' : '입장'}</button></div>
       </form></div>`;
   }
-  const best = id => { const xs = MINE.filter(a => a.testId === id); return xs.length ? `최근 ${modName(xs[0].mod)} <span class="num">${xs[0].score}/${xs[0].total}</span> · ${xs.length}회 응시` : '아직 안 풀었어요'; };
+  const best = id => { const xs = MINE.filter(a => a.testId === id); return xs.length ? `최근 ${modName(xs[0].mod)} <span class="num">${scoreText(xs[0])}</span> · ${xs.length}회 응시` : '아직 안 풀었어요'; };
   const cards = S.tests.map(t => `<article class="tcard"><h3>TEST ${t.id}</h3>
     <dl>${t.modules.map(m => `<dt>${esc(m.name)}</dt><dd>${fmtMin(m.minutes)} · 단어 ${m.words} · 리딩 ${m.read}</dd>`).join('')}</dl>
     <div class="best">${best(t.id)}</div>
     <button class="btn primary" data-act="start" data-id="${t.id}"${S.busy ? ' disabled' : ''}>${S.busy === 'start' + t.id ? '불러오는 중…' : `TEST ${t.id} 선택`}</button></article>`).join('');
   const mine = MINE.length ? `<section class="stack"><h2 style="font-size:18px">내 기록 <span class="note" style="font-weight:400">(이 기기에서 푼 것만)</span></h2>
     <div class="tablebox"><table><thead><tr><th>날짜</th><th>시험</th><th>점수</th><th>M1 단어</th><th>M1 리딩</th><th>M2 단어</th><th>M2 리딩</th></tr></thead><tbody>
-    ${MINE.map(a => `<tr><td class="num">${fmtDate(a.finishedAt)}</td><td>${recLabel(a)}</td><td class="num"><b>${a.score}/${a.total}</b></td>${['0w', '0r', '1w', '1r'].map(k => `<td class="num">${a.parts && a.parts[k] ? a.parts[k].join('/') : '-'}</td>`).join('')}</tr>`).join('')}
+    ${MINE.map(a => `<tr><td class="num">${fmtDate(a.finishedAt)}</td><td>${recLabel(a)}</td><td class="num"><b>${scoreText(a)}</b></td>${['0w', '0r', '1w', '1r'].map(k => `<td class="num">${a.parts && a.parts[k] ? a.parts[k].join('/') : '-'}</td>`).join('')}</tr>`).join('')}
     </tbody></table></div></section>` : '';
   const lcTab = S.tab === 'lc';
   return `<div class="home">
@@ -281,7 +283,7 @@ function viewPick() {
     return `<article class="tcard"><h3>${esc(m.name)}</h3>
       <dl><dt>문제</dt><dd>단어 ${words} · 리딩 ${read} · 총 ${words + read}문제</dd><dt>기본 시간</dt><dd>${fmtMin(m.minutes)}</dd></dl>
       <label class="field">제한 시간 (분)<span class="inline"><input type="number" class="lim" id="lim${mi}" data-mi="${mi}" min="0" max="120" step="0.5" value="${limitOf(t.id, mi, m)}" aria-label="${esc(m.name)} 제한 시간(분)"><span class="note">0이면 제한 없이 풀어요</span></span></label>
-      <div class="best">${done.length ? `최근 <span class="num">${done[0].score}/${done[0].total}</span> · ${done.length}회 응시` : '아직 안 풀었어요'}</div>
+      <div class="best">${done.length ? `최근 <span class="num">${scoreText(done[0])}</span> · ${done.length}회 응시` : '아직 안 풀었어요'}</div>
       <button class="btn primary" data-act="startMod" data-mi="${mi}">${esc(m.name)} 시작</button></article>`;
   }).join('');
   return `<div class="home">
@@ -335,11 +337,11 @@ function viewResult() {
   const title = r.practice ? `빈칸 TEST ${span(r.practice)}` : r.lc ? `리스닝 ${esc(r.lc.title)} · ${modName(r.module)}` : `TEST ${r.testId} · ${modName(r.module)}`;
   return `<div class="stack">
     <div class="qhead"><h2>${title} 결과 · ${esc(r.name)}</h2><span class="note num">소요 ${fmtTime(r.used[0] || 0)}${limitText}</span></div>
-    ${scoreBlock(r)}
-    <div class="banner ok">결과가 선생님께 전달됐어요.</div>
-    <div class="toolbar"><label class="check note"><input type="checkbox" id="onlyWrong" ${R.onlyWrong ? 'checked' : ''}> 틀린 문항만 보기</label><span class="spacer"></span>
+    ${r.hidden ? `<div class="banner ok">답안이 선생님께 전달됐어요. 이 회차는 지금 닫혀 있어서 점수와 채점 결과는 선생님만 볼 수 있어요.</div>` : `${scoreBlock(r)}
+    <div class="banner ok">결과가 선생님께 전달됐어요.</div>`}
+    <div class="toolbar">${r.hidden ? '' : `<label class="check note"><input type="checkbox" id="onlyWrong" ${R.onlyWrong ? 'checked' : ''}> 틀린 문항만 보기</label>`}<span class="spacer"></span>
       ${S.pick ? `<button class="btn" data-act="pickAgain">TEST ${r.testId} 다른 모듈 풀기</button>` : ''}${S.lcPick && r.lc ? `<button class="btn" data-act="lcPickAgain">${esc(r.lc.title)} 다른 모듈 풀기</button>` : ''}<button class="btn primary" data-act="home">${r.practice ? '처음 화면으로' : '다른 회차 풀기'}</button></div>
-    ${reviewTable(r, R.onlyWrong, R.showAnswers)}</div>`;
+    ${r.hidden ? '' : reviewTable(r, R.onlyWrong, R.showAnswers)}</div>`;
 }
 function viewModal() {
   const md = S.modal; if (!md) return '';

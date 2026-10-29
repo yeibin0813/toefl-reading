@@ -41,7 +41,7 @@ async function startLc(id) {
 function viewLcList() {
   const tests = S.lcTests || [];
   if (!tests.length) return `<div class="banner">지금 열려 있는 리스닝 회차가 없어요. 선생님께 문의하세요.</div>`;
-  const best = id => { const xs = MINE.filter(a => a.lc && a.lc.id === id); return xs.length ? `최근 ${modName(xs[0].mod)} <span class="num">${xs[0].score}/${xs[0].total}</span> · ${xs.length}회 응시` : '아직 안 풀었어요'; };
+  const best = id => { const xs = MINE.filter(a => a.lc && a.lc.id === id); return xs.length ? `최근 ${modName(xs[0].mod)} <span class="num">${scoreText(xs[0])}</span> · ${xs.length}회 응시` : '아직 안 풀었어요'; };
   const group = (set, title) => {
     const list = tests.filter(t => t.set === set); if (!list.length) return '';
     return `<section class="stack"><h2 style="font-size:18px">${title} <span class="note" style="font-weight:400">${list.length}회차</span></h2><section class="tests">${list.map(t => `<article class="tcard"><h3>${esc(t.title)}</h3>
@@ -59,7 +59,7 @@ function viewLcPick() {
     const done = MINE.filter(a => a.lc && a.lc.id === t.id && a.mod === mi);
     return `<article class="tcard"><h3>${esc(m.name)}</h3>
       <dl><dt>문제</dt><dd>${lcCount(m)}문제</dd><dt>구성</dt><dd>${parts}</dd><dt>음원</dt><dd>약 ${lcMB((t.packs || [])[mi] || 0)}MB (시작 전에 받아요)</dd></dl>
-      <div class="best">${done.length ? `최근 <span class="num">${done[0].score}/${done[0].total}</span> · ${done.length}회 응시` : '아직 안 풀었어요'}</div>
+      <div class="best">${done.length ? `최근 <span class="num">${scoreText(done[0])}</span> · ${done.length}회 응시` : '아직 안 풀었어요'}</div>
       <button class="btn primary" data-act="lcModule" data-mi="${mi}">${esc(m.name)} 시작</button></article>`;
   }).join('');
   return `<div class="home">
