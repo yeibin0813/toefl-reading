@@ -8,6 +8,8 @@ const SH = { settings: '설정', tests: '문제', results: '결과', lc: '리스
 const LC_FOLDER = '토플 리스닝 음원';
 // 리스닝 세트 이름. 회차 제목은 저장된 값 대신 늘 "세트 이름 + TEST 번호"로 만든다 (예: NEW TOEFL 3 TEST 1).
 const LC_SET_NAME = { new: 'NEW TOEFL 3', tpo: 'TPO' };
+// 리스닝 섹션 이름 (학생이 섹션만 골라 풀 때 기록에 붙인다)
+const LC_TYPE_NAME = { response: 'Best Response', conversation: 'Conversation', announcement: 'Announcement', talk: 'Academic Talk' };
 const DEFAULT_PW = 'toefl1234';
 const RESULT_HEADERS = ['제출 시각', '이름', '회차', '총점', '만점', 'M1 단어', 'M1 리딩', 'M2 단어', 'M2 리딩',
   '소요 시간 (M1 + M2)', '틀린 문항', '틀린 답 → 정답', '상세 (JSON)', '기록 ID', '기간', '반'];
@@ -98,10 +100,11 @@ const API = {
     checkCode_(r.code);
     const t = loadLc_(r.id), mi = Number(r.module);
     if (!t) throw new Error('회차를 찾을 수 없어요.');
-    const g = gradeLc_(t, r.answers || {}, mi);
+    const secs = lcSecs_(t, mi, r.secs);
+    const g = gradeLc_(t, r.answers || {}, mi, secs);
     const rec = {
       id: newId_(), name: clip_(r.name, 60),
-      period: clip_(r.period, 40), cls: clip_(r.cls, 60), testId: null, lc: { id: t.id, title: t.title }, module: mi, limit: 0,
+      period: clip_(r.period, 40), cls: clip_(r.cls, 60), testId: null, lc: { id: t.id, title: t.title }, secs, module: mi, limit: 0,
       finishedAt: Date.now(), used: (r.used || []).map(Number), score: g.score, total: g.total, parts: g.parts, rows: g.rows
     };
     return saveResult_(rec, r.attempt, isLcOpen_(t));
@@ -199,7 +202,7 @@ const API = {
       const practice = detail && detail.practice || null, lc = detail && detail.lc || null;
       out.push({
         id: String(row[13]), finishedAt: row[0] instanceof Date ? row[0].getTime() : Number(row[0]) || 0,
-        name: String(row[1]), practice, lc, period: String(row[14] || ''), cls: String(row[15] || ''),
+        name: String(row[1]), practice, lc, secs: detail && detail.secs || null, period: String(row[14] || ''), cls: String(row[15] || ''),
         testId: practice || lc ? null : Number((String(row[2]).match(/TEST (\d+)/) || [])[1]) || String(row[2]),
         module: detail && (detail.module === 0 || detail.module === 1) ? detail.module : (/ M1$/.test(String(row[2])) ? 0 : / M2$/.test(String(row[2])) ? 1 : null),
         limit: detail && Number(detail.limit) || 0,
@@ -398,16 +401,23 @@ function lcAudioStatus_(tests) {
   tests.forEach(t => t.modules.forEach((m, mi) => { if (!names.has(t.id + '_m' + (mi + 1) + '.json')) missing.push(t.title + ' M' + (mi + 1)); }));
   return { folder: folders.length > 0, files: names.size, dup: Math.max(0, folders.length - 1), missing };
 }
-// 리스닝 한 모듈 채점. 유형별 점수: resp 응답 고르기, conv 대화, ann 공지, talk 강의
-function gradeLc_(t, answers, mi) {
+// 학생이 고른 섹션: 모듈에 있는 유형만 남긴다. 안 골랐거나 전부 골랐으면 null(모듈 전체)
+function lcSecs_(t, mi, raw) {
+  const m = t.modules[mi]; if (!m || !Array.isArray(raw)) return null;
+  const present = Object.keys(LC_TYPE_NAME).filter(tp => m.items.some(it => it.type === tp));
+  const chosen = present.filter(tp => raw.includes(tp));
+  return !chosen.length || chosen.length === present.length ? null : chosen;
+}
+// 리스닝 한 모듈 채점 (secs가 있으면 그 섹션 문항만). 유형별 점수: resp Best Response, conv Conversation, ann Announcement, talk Academic Talk
+function gradeLc_(t, answers, mi, secs) {
   const m = t.modules[mi]; if (!m) throw new Error('모듈을 다시 골라 주세요.');
-  const rows = [], parts = {};
-  m.items.forEach(it => it.questions.forEach(q => {
+  const rows = [], parts = {}, items = m.items.filter(it => !secs || secs.includes(it.type));
+  items.forEach(it => it.questions.forEach(q => {
     const k = mi + '-' + q.n, given = String(answers[k] || '');
     rows.push({ k, mi, n: q.n, kind: 'l', type: it.type, given, correct: q.a, ok: given === q.a });
   }));
   const key = { response: 'resp', conversation: 'conv', announcement: 'ann', talk: 'talk' };
-  m.items.forEach(it => it.questions.forEach(q => {
+  items.forEach(it => it.questions.forEach(q => {
     const p = parts[key[it.type]] || (parts[key[it.type]] = [0, 0]); p[1]++; if (answers[mi + '-' + q.n] === q.a) p[0]++;
   }));
   return { rows, parts, score: rows.filter(r => r.ok).length, total: rows.length };
@@ -468,7 +478,7 @@ function appendResult_(rec) {
       : rec.module != null ? 'M' + (rec.module + 1) + ' ' + fmt(rec.used[0]) + lim
       : rec.used.map(fmt).join(' + ');
     const label = rec.practice ? '빈칸 TEST ' + rec.practice.from + (rec.practice.to !== rec.practice.from ? '-' + rec.practice.to : '')
-      : rec.lc ? '리스닝 ' + rec.lc.title + ' M' + (rec.module + 1)
+      : rec.lc ? '리스닝 ' + rec.lc.title + ' M' + (rec.module + 1) + (rec.secs ? ' (' + rec.secs.map(s => LC_TYPE_NAME[s]).join(' · ') + ')' : '')
       : 'TEST ' + rec.testId + (rec.module != null ? ' M' + (rec.module + 1) : '');
     const where = x => (x.t != null ? 'T' + x.t + ' ' : '') + 'M' + (x.mi + 1) + '-' + x.n;
     const wrong = rec.rows.filter(x => !x.ok);
@@ -480,7 +490,7 @@ function appendResult_(rec) {
       part('0w'), part('0r'), part('1w'), part('1r'), used,
       clip_(wrong.map(where).join(', '), 5000),
       clip_(wrong.map(x => where(x) + ': ' + (x.given || '(빈칸)') + ' → ' + (x.kind === 'w' ? x.full : x.correct)).join('; '), 5000),
-      JSON.stringify({ used: rec.used, rows: rec.rows, module: rec.module, limit: rec.limit, practice: rec.practice || null, lc: rec.lc || null, parts: rec.lc ? rec.parts : undefined }), rec.id,
+      JSON.stringify({ used: rec.used, rows: rec.rows, module: rec.module, limit: rec.limit, practice: rec.practice || null, lc: rec.lc || null, secs: rec.secs || undefined, parts: rec.lc ? rec.parts : undefined }), rec.id,
       rec.period || '', rec.cls || ''
     ]);
   }
