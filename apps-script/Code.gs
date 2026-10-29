@@ -3,8 +3,9 @@
 // 학생에게는 정답 없는 문제만 보내고, 채점은 여기서 한다.
 // 리스닝 음원은 내 드라이브의 "토플 리스닝 음원" 폴더에 모듈마다 파일 하나(<id>_m<k>.json)로 있고,
 // 입장 코드가 맞는 학생에게만 이 서버가 꺼내 보낸다.
+// 리스닝 해설(문항별 해설과 묶음별 스크립트)은 "리스닝해설" 시트에 회차마다 한 줄로 있고, 정답 공개일 때 다시 보기에서만 보낸다.
 
-const SH = { settings: '설정', tests: '문제', results: '결과', lc: '리스닝' };
+const SH = { settings: '설정', tests: '문제', results: '결과', lc: '리스닝', lcx: '리스닝해설' };
 const LC_FOLDER = '토플 리스닝 음원';
 // 리스닝 세트 이름. 회차 제목은 저장된 값 대신 늘 "세트 이름 + TEST 번호"로 만든다 (예: NEW TOEFL 3 TEST 1).
 const LC_SET_NAME = { new: 'NEW TOEFL 3', tpo: 'TPO' };
@@ -165,7 +166,7 @@ const API = {
       content = sets.length ? { sets } : null;
     } else if (info.lc) {
       const t = loadLc_(info.lc.id);
-      content = t ? { test: stripLc_(t) } : null;
+      content = t ? { test: stripLc_(t), extra: open.showAnswers ? lcExtraFor_(t, rows) : null } : null;
     } else if (info.testId != null) {
       const t = testsById_([info.testId])[info.testId];
       content = t ? { test: stripAnswers_(t) } : null;
@@ -220,13 +221,16 @@ const API = {
     withLock_(() => deleteRows_(SH.tests, 0, r.id));
     return { tests: allTests_().map(testSummary_) };
   },
-  listLc(r) { checkPw_(r.pw); const tests = allLc_(); return { tests: tests.map(lcSummary_), audio: lcAudioStatus_(tests) }; },
+  listLc(r) { checkPw_(r.pw); const tests = allLc_(); return { tests: tests.map(lcSummary_), audio: lcAudioStatus_(tests), ex: lcxCounts_() }; },
   saveLc(r) {
     checkPw_(r.pw);
     const list = Array.isArray(r.tests) ? r.tests : (r.tests && r.tests.tests) || [];
     if (!list.length) throw new Error('추가할 리스닝 회차가 없어요.');
     list.forEach(validateLc_);
-    let added = 0, updated = 0;
+    // 해설·스크립트는 떼어서 "리스닝해설" 시트에 따로 둔다 (문제 시트는 학생 목록을 만들 때마다 읽으니 가볍게)
+    const extras = {};
+    list.forEach(t => { const x = lcExtra_(t); if (x) extras[t.id] = x; });
+    let added = 0, updated = 0, explained = 0;
     // 두 번 겹쳐 올려도 같은 회차가 두 줄 생기지 않게, 잠근 뒤 시트를 읽고 쓴다
     withLock_(() => {
       const sheet = sheet_(SH.lc), rows = sheet.getDataRange().getValues();
@@ -238,8 +242,17 @@ const API = {
         else fresh[t.id] = line;
       });
       added = appendRows_(sheet, Object.values(fresh));
+      // 해설이 없는 파일을 올리면 이미 있는 해설은 그대로 둔다
+      const xs = sheet_(SH.lcx), xrows = xs.getDataRange().getValues(), xidx = {}, xfresh = [];
+      xrows.forEach((row, i) => { if (i) xidx[String(row[0])] = i + 1; });
+      Object.keys(extras).forEach(id => {
+        const line = [id, Object.keys(extras[id].x).length, JSON.stringify(extras[id])];
+        if (xidx[id]) xs.getRange(xidx[id], 1, 1, 3).setValues([line]); else xfresh.push(line);
+        explained++;
+      });
+      appendRows_(xs, xfresh);
     });
-    return { added, updated, tests: allLc_().map(lcSummary_) };
+    return { added, updated, explained, tests: allLc_().map(lcSummary_), ex: lcxCounts_() };
   },
   // 음원 묶음 하나(<id>_m<k>.json)를 드라이브 "토플 리스닝 음원" 폴더에 저장한다. 같은 이름이 있으면 휴지통으로 보내고 새로 만든다.
   saveAudio(r) {
@@ -254,8 +267,8 @@ const API = {
   },
   deleteLc(r) {
     checkPw_(r.pw);
-    withLock_(() => deleteRows_(SH.lc, 0, r.id));
-    return { tests: allLc_().map(lcSummary_) };
+    withLock_(() => { deleteRows_(SH.lc, 0, r.id); deleteRows_(SH.lcx, 0, r.id); });
+    return { tests: allLc_().map(lcSummary_), ex: lcxCounts_() };
   },
   listResults(r) {
     checkPw_(r.pw);
@@ -432,6 +445,47 @@ function stripLc_(t) {
   return { id: t.id, set: t.set, no: t.no, title: t.title, packs: t.packs || [], modules: t.modules.map(m => ({ name: m.name, items: m.items.map(it => ({
     type: it.type, heading: it.heading, from: it.from, to: it.to, clip: it.audio.split('/').pop().replace(/\.mp3$/, ''), secs: it.secs,
     questions: it.questions.map(q => ({ n: q.n, q: q.q, c: q.c })) })) })) };
+}
+// 올린 회차에서 해설(q.x)과 스크립트(it.script)를 떼어 낸다 -> { s: { "모듈:첫 문항": 스크립트 }, x: { "모듈-문항": 해설 } }, 없으면 null
+function lcExtra_(t) {
+  const s = {}, x = {};
+  t.modules.forEach((m, mi) => m.items.forEach(it => {
+    if (typeof it.script === 'string' && it.script.trim()) s[mi + ':' + it.from] = it.script.trim().slice(0, 8000);
+    delete it.script;
+    it.questions.forEach(q => { if (typeof q.x === 'string' && q.x.trim()) x[mi + '-' + q.n] = q.x.trim().slice(0, 2000); delete q.x; });
+  }));
+  if (!Object.keys(s).length && !Object.keys(x).length) return null;
+  // 시트 칸 하나에 5만 자까지 들어간다
+  if (JSON.stringify({ s, x }).length > 49000) throw new Error(lcTitle_(t) + ': 해설이 너무 길어요 (시트 칸 하나에 다 들어가지 않아요).');
+  return { s, x };
+}
+function loadLcx_(id) {
+  const sheet = sheet_(SH.lcx), n = sheet.getLastRow() - 1;
+  if (n < 1) return null;
+  const ids = sheet.getRange(2, 1, n, 1).getValues();
+  for (let i = 0; i < n; i++) if (String(ids[i][0]) === String(id)) { try { return JSON.parse(sheet.getRange(i + 2, 3).getValue()); } catch (e) { return null; } }
+  return null;
+}
+// 이 기록에서 푼 문항의 해설과, 그 문항이 든 묶음의 스크립트만 보낸다 (안 푼 문항의 정답이 해설로 새지 않게)
+function lcExtraFor_(t, rows) {
+  const ex = loadLcx_(t.id);
+  if (!ex) return null;
+  const keys = new Set(rows.map(r => r.k)), s = {}, x = {};
+  t.modules.forEach((m, mi) => m.items.forEach(it => {
+    const qs = it.questions.filter(q => keys.has(mi + '-' + q.n));
+    if (!qs.length) return;
+    const sk = mi + ':' + it.from;
+    if (ex.s && ex.s[sk]) s[sk] = ex.s[sk];
+    qs.forEach(q => { const k = mi + '-' + q.n; if (ex.x && ex.x[k]) x[k] = ex.x[k]; });
+  }));
+  return Object.keys(s).length || Object.keys(x).length ? { s, x } : null;
+}
+// 관리자 목록에 보일 회차별 해설 수
+function lcxCounts_() {
+  const sheet = sheet_(SH.lcx), n = sheet.getLastRow() - 1, out = {};
+  if (n < 1) return out;
+  sheet.getRange(2, 1, n, 2).getValues().forEach(row => { if (row[0]) out[String(row[0])] = Number(row[1]) || 0; });
+  return out;
 }
 // 드라이브 "토플 리스닝 음원" 폴더. 내가 만든(내 소유) 폴더만 쓴다. 남이 같은 이름 폴더를 공유해 와도 쓰지 않는다.
 // 한 번 고른 폴더는 ID를 기억해 두고 계속 쓴다. 같은 이름 폴더가 여럿이면(다시 올리다 생긴 것) 파일이 가장 많은 폴더를 고른다.
@@ -660,6 +714,8 @@ function sheet_(name) {
     sheet.appendRow(['회차', '제목', '문제 수', 'JSON']);
   } else if (name === SH.lc) {
     sheet.appendRow(['ID', '세트', '회차', '문제 수', 'JSON']);
+  } else if (name === SH.lcx) {
+    sheet.appendRow(['ID', '해설 수', 'JSON (해설·스크립트)']);
   } else if (name === SH.results) {
     sheet.appendRow(RESULT_HEADERS); sheet.getRange('A:A').setNumberFormat('yyyy-mm-dd hh:mm');
   }
