@@ -435,10 +435,28 @@ async function rvAudioLoad() {
   LCR.loading = false;
   if (S.screen === 'review') render();
 }
+// 스크립트를 말차례(대화)·한두 문장씩 영어와 해석으로. 문항의 근거 문장(ev) 앞에 ⟨문항-정답⟩ 표시를 붙인다.
+function rvLines(lines, qs) {
+  const fold = s => String(s).replace(/[’‘]/g, "'").replace(/[“”]/g, '"').replace(/\u2028/g, ' ');
+  const marks = lines.map(() => []);
+  qs.forEach(([q, e, x]) => {
+    if (!e || !e.ev || !x) return;
+    for (const probe of [fold(e.ev), fold(e.ev).slice(0, 30)]) {
+      const li = lines.findIndex(l => fold(l.en).includes(probe));
+      if (li >= 0) { marks[li].push({ at: fold(lines[li].en).indexOf(probe), len: probe.length, tag: `${q.n}-${x.correct || '?'}` }); return; }
+    }
+  });
+  return `<div class="rvlines">${lines.map((l, li) => {
+    let en = '', pos = 0;
+    marks[li].sort((a, b) => a.at - b.at).forEach(m => { if (m.at < pos) return; en += esc(l.en.slice(pos, m.at)) + `<span class="evmark">⟨${esc(m.tag)}⟩</span><span class="evd">${esc(l.en.slice(m.at, m.at + m.len))}</span>`; pos = m.at + m.len; });
+    en += esc(l.en.slice(pos));
+    return `<div class="ln"><span class="sp">${l.sp === 'M' ? '남' : l.sp === 'W' ? '여' : ''}</span><div><p class="en">${en}</p><p class="ko">${esc(l.ko)}</p></div></div>`;
+  }).join('')}</div>`;
+}
 // 리스닝 다시 보기: 모듈마다 문항 묶음별로 음원(불러왔으면)과 문제
 function lcReviewBody(V) {
-  // ex: 정답 공개일 때 서버가 보내는 해설 { s: { "모듈:첫 문항": 스크립트 }, x: { "모듈-문항": 해설 } }
-  const r = V.r, t = V.content.test, mods = rvMods(r, t), by = rowMap(r.rows), ex = V.content.extra || { s: {}, x: {} };
+  // ex: 정답 공개일 때 서버가 보내는 해설 { i: { "모듈:첫 문항": { s: 원문, l: [{ sp, en, ko }] } }, q: { "모듈-문항": { qk, type, ok, ul, ev, exp } } }
+  const r = V.r, t = V.content.test, mods = rvMods(r, t), by = rowMap(r.rows), ex = V.content.extra || { i: {}, q: {} };
   if (!mods.length || mods.some(mi => !t.modules[mi])) return '';
   const key = r.lc.id + '_m' + mods.join(''), mine = LCR.key === key;
   const mb = lcMB(mods.reduce((n, mi) => n + ((t.packs || [])[mi] || 0), 0));
@@ -450,13 +468,13 @@ function lcReviewBody(V) {
       it.questions.forEach(q => { const x = by[mi + '-' + q.n]; if (x) V.seen.add(x.k); });
       const qs = it.questions.filter(q => { const x = by[mi + '-' + q.n]; return x && (!V.onlyWrong || !x.ok); });
       if (!qs.length) return '';
-      const clip = mi + ':' + it.clip, s = mine && LCR.clips && LCR.clips[clip] ? rvState(clip) : null, script = ex.s[mi + ':' + it.from];
+      const clip = mi + ':' + it.clip, s = mine && LCR.clips && LCR.clips[clip] ? rvState(clip) : null, ix = ex.i[mi + ':' + it.from] || {}, sk = r.id + '|' + mi + ':' + it.from;
       const player = s ? `<div class="rvplay" data-clip="${esc(clip)}"><button class="btn small" data-act="rvPlay" data-clip="${esc(clip)}">${s.label}</button>
         <input type="range" min="0" max="${s.max}" step="1" value="${s.value}" data-rvseek="${esc(clip)}" aria-label="${esc(it.heading)} 재생 위치" aria-valuetext="${s.text}"><span class="t num">${s.text}</span></div>` : '';
       return `<section class="stack rvitem"><div class="qhead" style="margin:0"><h3>${esc(it.heading)}</h3><span class="note num">${LC_TYPE[it.type] || ''} · ${it.from === it.to ? `Question ${it.from}` : `Questions ${it.from}–${it.to}`}</span></div>
         ${player}
-        ${script && it.type !== 'response' ? `<details class="rvscript" data-sk="${esc(r.id + '|' + mi + ':' + it.from)}"${LCR.open.has(r.id + '|' + mi + ':' + it.from) ? ' open' : ''}><summary>스크립트 보기</summary><p>${esc(script)}</p></details>` : ''}
-        ${qs.map(q => rvChoice(q.n, q.q || (it.type === 'response' && script ? script : '가장 알맞은 응답을 고르세요.'), q.c, by[mi + '-' + q.n], '', ex.x[mi + '-' + q.n])).join('')}</section>`;
+        ${ix.l && it.type !== 'response' ? `<details class="rvscript" data-sk="${esc(sk)}"${LCR.open.has(sk) ? ' open' : ''}><summary>스크립트 · 해석 보기</summary>${rvLines(ix.l, it.questions.map(q => [q, ex.q[mi + '-' + q.n], by[mi + '-' + q.n]]))}</details>` : ''}
+        ${qs.map(q => rvChoice(q.n, q.q || (it.type === 'response' && ix.s ? ix.s : '가장 알맞은 응답을 고르세요.'), q.c, by[mi + '-' + q.n], '', ex.q[mi + '-' + q.n])).join('')}</section>`;
     }).join('');
     return items && mods.length > 1 ? `<h3 class="rvmod">${esc(t.modules[mi].name)}</h3>${items}` : items;
   }).join('');

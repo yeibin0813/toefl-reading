@@ -226,9 +226,21 @@ label.btn { cursor: pointer; }
 .rvx { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; padding: 10px 14px; font-size: 14px; line-height: 1.65; }
 .rvx b { display: block; font-size: 12px; letter-spacing: .04em; color: var(--accent); margin-bottom: 2px; }
 .rvx p { margin: 0; white-space: pre-line; }
+.rvx p b { display: inline; font-size: inherit; letter-spacing: 0; color: inherit; margin: 0; }
+.rvx p b.tagl { color: var(--accent); }
+.rvx .rvtype { display: block; font-size: 13px; font-weight: 600; color: var(--ink); margin: 0 0 6px; }
+.rvq .ko, .opt.rv .ko { display: block; font-size: 13px; color: var(--muted); font-weight: 400; margin-top: 2px; }
+u.trap { text-decoration-color: var(--bad); text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
 .rvscript { border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
 .rvscript summary { cursor: pointer; padding: 9px 14px; font-size: 14px; font-weight: 600; color: var(--accent); }
-.rvscript p { margin: 0; padding: 0 14px 12px; font-family: var(--font-read); font-size: 16px; line-height: 1.7; }
+.rvlines { display: grid; gap: 10px; padding: 2px 14px 14px; }
+.rvlines .ln { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; }
+.rvlines .sp { font-size: 13px; font-weight: 700; color: var(--accent); padding-top: 3px; }
+.rvlines p { margin: 0; }
+.rvlines .en { font-family: var(--font-read); font-size: 16px; line-height: 1.6; }
+.rvlines .ko { font-size: 14px; color: var(--muted); line-height: 1.6; }
+.evmark { font-family: var(--font-num); font-size: 12px; font-weight: 600; color: var(--ok); margin-right: 3px; white-space: nowrap; }
+.evd { background: var(--ok-soft); border-radius: 3px; }
 .review-on .passage, .review-on .words, .review-on .rvq, .review-on .rvscript { user-select: none; -webkit-user-select: none; }
 .insmark.mine { background: var(--accent-soft); }
 .insmark.mine.bad { border-color: var(--bad); color: var(--bad); background: var(--bad-soft); }
