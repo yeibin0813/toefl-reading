@@ -49,7 +49,7 @@ function viewLcList() {
       <div class="best">${best(t.id)}</div>
       <button class="btn primary" data-act="lcStart" data-id="${esc(t.id)}"${S.busy ? ' disabled' : ''}>${S.busy === 'lc' + t.id ? '불러오는 중…' : '선택'}</button></article>`).join('')}</section></section>`;
   };
-  return group('new', '새 문제집') + group('tpo', 'TPO');
+  return group('new', 'NEW TOEFL 3') + group('tpo', 'TPO');
 }
 function viewLcPick() {
   const t = S.lcPick.test;

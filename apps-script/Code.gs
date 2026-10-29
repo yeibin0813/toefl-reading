@@ -6,6 +6,8 @@
 
 const SH = { settings: '설정', tests: '문제', results: '결과', lc: '리스닝' };
 const LC_FOLDER = '토플 리스닝 음원';
+// 리스닝 세트 이름. 회차 제목은 저장된 값 대신 늘 "세트 이름 + TEST 번호"로 만든다 (예: NEW TOEFL 3 TEST 1).
+const LC_SET_NAME = { new: 'NEW TOEFL 3', tpo: 'TPO' };
 const DEFAULT_PW = 'toefl1234';
 const RESULT_HEADERS = ['제출 시각', '이름', '회차', '총점', '만점', 'M1 단어', 'M1 리딩', 'M2 단어', 'M2 리딩',
   '소요 시간 (M1 + M2)', '틀린 문항', '틀린 답 → 정답', '상세 (JSON)', '기록 ID', '기간', '반'];
@@ -163,7 +165,7 @@ const API = {
       const idx = {}; rows.forEach((row, i) => { if (i) idx[String(row[0])] = i + 1; });
       const fresh = {};
       list.forEach(t => {
-        const line = [t.id, t.set === 'new' ? '새 문제집' : 'TPO', Number(t.no), lcCount_(t), JSON.stringify(t)];
+        const line = [t.id, LC_SET_NAME[t.set], Number(t.no), lcCount_(t), JSON.stringify(t)];
         if (idx[t.id]) { sheet.getRange(idx[t.id], 1, 1, 5).setValues([line]); updated++; }
         else fresh[t.id] = line;
       });
@@ -317,15 +319,17 @@ function stripAnswers_(t) {
 //   modules: [{ name, items: [{ type, heading, from, to, audio: "m1/13-14.mp3", secs, questions: [{ n, q, c, a }] }] }] }
 function allLc_() {
   const rows = sheet_(SH.lc).getDataRange().getValues(), byId = {};
-  for (let i = 1; i < rows.length; i++) { try { const t = JSON.parse(rows[i][4]); if (t && t.id && Array.isArray(t.modules)) byId[t.id] = t; } catch (e) {} }
+  for (let i = 1; i < rows.length; i++) { try { const t = JSON.parse(rows[i][4]); if (t && t.id && Array.isArray(t.modules)) { t.title = lcTitle_(t); byId[t.id] = t; } } catch (e) {} }
   return Object.values(byId).sort((a, b) => (a.set === b.set ? a.no - b.no : a.set === 'new' ? -1 : 1));
 }
 function loadLc_(id) {
   const rows = sheet_(SH.lc).getDataRange().getValues();
-  for (let i = 1; i < rows.length; i++) if (String(rows[i][0]) === String(id)) return JSON.parse(rows[i][4]);
+  for (let i = 1; i < rows.length; i++) if (String(rows[i][0]) === String(id)) { const t = JSON.parse(rows[i][4]); t.title = lcTitle_(t); return t; }
   return null;
 }
-function isLcOpen_(t) { const s = openSet_(t.set === 'new' ? '리스닝새열린회차' : '리스닝TPO열린회차'); return !s || s.has(Number(t.no)); }
+function lcTitle_(t) { return (LC_SET_NAME[t.set] || t.set) + ' TEST ' + t.no; }
+// 리스닝은 열린 회차 칸이 비어 있으면 아무 회차도 열리지 않는다 (리딩은 비어 있으면 전부 열림)
+function isLcOpen_(t) { const s = openSet_(t.set === 'new' ? '리스닝새열린회차' : '리스닝TPO열린회차'); return !!s && s.has(Number(t.no)); }
 function lcCount_(t) { return t.modules.reduce((n, m) => n + m.items.reduce((k, it) => k + it.questions.length, 0), 0); }
 function lcSummary_(t) {
   return { id: t.id, set: t.set, no: t.no, title: t.title, modules: t.modules.map(m => ({ name: m.name, count: m.items.reduce((k, it) => k + it.questions.length, 0) })) };
@@ -335,7 +339,7 @@ function validateLc_(t) {
   // 시트 칸에 그대로 들어가는 값은 숫자·정해진 글자만 받는다 (수식이 들어가지 않게)
   if (!(t.set === 'new' || t.set === 'tpo') || !(Number.isInteger(Number(t.no)) && Number(t.no) > 0) || t.id !== t.set + '-' + Number(t.no)) throw new Error('리스닝 회차 번호가 잘못됐어요: ' + String(t.id).slice(0, 20));
   t.modules.forEach(m => m.items.forEach(it => it.questions.forEach(q => {
-    if (!LET.includes(q.a)) throw new Error(t.title + ' ' + m.name + ' ' + q.n + '번: 정답이 A~D가 아니에요.');
+    if (!LET.includes(q.a)) throw new Error(lcTitle_(t) + ' ' + m.name + ' ' + q.n + '번: 정답이 A~D가 아니에요.');
   })));
 }
 // 학생에게 보낼 버전: 정답만 뺀다
