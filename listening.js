@@ -5,9 +5,10 @@
 // index.html보다 먼저 불러온다. 여기 함수들은 그 페이지의 S, esc, render 등을 부를 때 쓴다.
 //
 // S.lcPick: { test(정답 없음), showAnswers } — 리스닝 회차를 고른 뒤 모듈을 고르는 화면
-// S.lcSecs: { id: 회차, [모듈 번호]: [고른 섹션 유형들] } — 모듈 카드에서 고른 섹션 (없거나 다른 회차 것이면 전부)
-// S.exam (리스닝): { kind: 'lc', test, showAnswers, mod, secs, answers, startedAt, step, phase, qEndsAt, used }
+// S.lcSecs: { id: 회차, [모듈 번호 또는 'all']: [고른 섹션 유형들] } — 모듈 카드에서 고른 섹션 (없거나 다른 회차 것이면 전부)
+// S.exam (리스닝): { kind: 'lc', test, showAnswers, mod, both, secs, answers, startedAt, step, phase, qEndsAt, used }
 //   secs: 고른 섹션 유형들 (예: ['talk']). null이면 모듈 전체
+//   both: Module 1 + 2 이어 풀기. 이때 test는 두 모듈을 이은 모듈 하나짜리(mod 0)이고 test.mods가 음원을 받을 원래 모듈들이다 (lcBothModule)
 //   step: 지금 화면 번호 (lcSteps 순서, -1이면 안내·음원 준비), phase: 'audio'(듣는 중) | 'answer'(답 고르는 중)
 
 const LC_TYPE = { response: 'Best Response', conversation: 'Conversation', announcement: 'Announcement', talk: 'Academic Talk' };
@@ -16,7 +17,8 @@ const LC_ORDER = ['response', 'conversation', 'announcement', 'talk'];
 const lcSecNames = secs => (secs && secs.length ? secs.map(s => LC_TYPE[s] || s).join(' · ') : '');
 // 받은 음원(모듈 하나)과 재생기. 음원은 저장하지 않으므로 새로고침하면 다시 받는다.
 // cur: 지금 들을 차례인 음원 주소(듣는 중일 때만), maxT: 그 음원을 어디까지 들었는지, ask: 'quit' | 'submit' (한 번 더 묻는 중)
-const LC = { key: '', clips: null, loading: false, got: 0, need: 0, err: '', au: null, blocked: false, vol: 1, cur: null, maxT: 0, silent: null, ask: '' };
+// tok·ctl: 지금 받고 있는 받기 (그만두면 끊고, 늦게 끝난 예전 받기는 아무것도 바꾸지 않는다)
+const LC = { key: '', clips: null, loading: false, got: 0, need: 0, err: '', au: null, blocked: false, vol: 1, cur: null, maxT: 0, silent: null, ask: '', tok: null, ctl: null };
 try { const v = parseFloat(localStorage.getItem('toefl-rq2:vol')); if (v >= 0 && v <= 1) LC.vol = v; } catch (e) {}
 // 아이폰·아이패드는 웹에서 소리 크기를 바꿀 수 없다(항상 1). 그런 기기에서는 소리 크기 막대를 숨긴다.
 const LC_VOL_OK = (() => { try { const a = document.createElement('audio'); a.volume = 0.5; return Math.abs(a.volume - 0.5) < 0.01; } catch (e) { return false; } })();
@@ -37,8 +39,17 @@ const lcCount = (m, secs) => m.items.filter(it => lcHas(secs, it)).reduce((n, it
 const lcStepsOf = e => lcSteps(e.test.modules[e.mod], e.secs);
 // 모듈에 있는 섹션 유형 (시험 순서대로)
 const lcTypesOf = m => LC_ORDER.filter(tp => m.items.some(it => it.type === tp));
-const lcPicked = mi => { const m = S.lcPick.test.modules[mi], all = lcTypesOf(m), mine = S.lcSecs && S.lcSecs.id === S.lcPick.test.id, sel = mine && S.lcSecs[mi];
+// Module 1 + 2 이어 풀기: 모든 모듈의 문항 묶음을 차례로 이은 모듈 하나. 묶음마다 원래 모듈 번호(mi)를 붙이고 음원 이름은 "모듈:이름"으로 바꾼다
+function lcBothModule(t) {
+  return { name: 'Module 1 + 2', items: t.modules.flatMap((m, mi) => m.items.map(it => Object.assign({}, it, { mi, clip: mi + ':' + it.clip }))) };
+}
+const lcPickModule = (t, mi) => (mi === 'all' ? lcBothModule(t) : t.modules[mi]);
+// 이어 풀기에서 고른 섹션이 들어 있는 원래 모듈들 (음원은 이 모듈들 것만 받는다)
+const lcModsOf = (m, sel) => [...new Set(m.items.filter(it => sel.includes(it.type)).map(it => it.mi))].sort();
+const lcPicked = mi => { const m = lcPickModule(S.lcPick.test, mi), all = lcTypesOf(m), mine = S.lcSecs && S.lcSecs.id === S.lcPick.test.id, sel = mine && S.lcSecs[mi];
   return sel ? all.filter(tp => sel.includes(tp)) : all; };
+// 답 키 "모듈-문항": 이어 풀기에서는 묶음의 원래 모듈 번호를 쓴다
+const lcKey = (e, it, q) => (it.mi != null ? it.mi : e.mod) + '-' + q.n;
 // 최근 기록 옆에 붙이는 섹션 표시 (섹션만 골라 푼 기록이면)
 const lcSecTag = a => (a && a.secs && a.secs.length ? ` (${lcSecNames(a.secs)})` : '');
 const lcMB = n => (n / 1048576).toFixed(1);
@@ -55,7 +66,7 @@ async function startLc(id) {
 function viewLcList() {
   const tests = S.lcTests || [];
   if (!tests.length) return `<div class="banner">지금 열려 있는 리스닝 회차가 없어요. 선생님께 문의하세요.</div>`;
-  const all = mineList(), best = id => bestText(all && all.filter(a => a.lc && a.lc.id === id), a => modName(a.mod) + esc(lcSecTag(a)));
+  const all = mineList(), best = id => bestText(all && all.filter(a => a.lc && a.lc.id === id), a => lcModName(a.mod) + esc(lcSecTag(a)));
   const group = (set, title) => {
     const list = tests.filter(t => t.set === set); if (!list.length) return '';
     return `<section class="stack"><h2 style="font-size:18px">${title} <span class="note" style="font-weight:400">${list.length}회차</span></h2><section class="tests">${list.map(t => `<article class="tcard"><h3>${esc(t.title)}</h3>
@@ -66,20 +77,24 @@ function viewLcList() {
   return group('new', 'NEW TOEFL 3') + group('tpo', 'TPO');
 }
 function viewLcPick() {
-  const t = S.lcPick.test;
-  const cards = t.modules.map((m, mi) => {
-    const sel = lcPicked(mi), all = lcTypesOf(m), n = lcCount(m, sel.length === all.length ? null : sel);
+  const t = S.lcPick.test, recs = mineList();
+  // 모듈 카드 하나. mi가 'all'이면 Module 1 + 2 이어 풀기 카드
+  const card = mi => {
+    const both = mi === 'all', m = lcPickModule(t, mi), sel = lcPicked(mi), all = lcTypesOf(m), n = lcCount(m, sel.length === all.length ? null : sel);
     const desc = tp => { const its = m.items.filter(it => it.type === tp), q = its.reduce((k, it) => k + it.questions.length, 0);
       return tp === 'response' ? `${q}문제` : `${its.length}개 · ${q}문제`; };
-    const recs = mineList(), done = recs && recs.filter(a => a.lc && a.lc.id === t.id && a.mod === mi);
-    return `<article class="tcard"><h3>${esc(m.name)}</h3>
+    const done = recs && recs.filter(a => a.lc && a.lc.id === t.id && (both ? a.mod == null : a.mod === mi));
+    const mb = both ? lcModsOf(m, sel).reduce((s, i) => s + ((t.packs || [])[i] || 0), 0) : (t.packs || [])[mi] || 0;
+    return `<article class="tcard${both ? ' lcboth' : ''}"><h3>${esc(m.name)}</h3>
+      ${both ? '<p class="note" style="margin:0">두 모듈에서 고른 섹션을 Module 1부터 이어서 풀어요. 예를 들어 Conversation만 고르면 이 회차의 Conversation을 모두 풀어요.</p>' : ''}
       <fieldset class="lcsecs"><legend>풀 섹션 <span class="note">원하는 섹션만 골라 풀 수 있어요</span></legend>
         ${all.map(tp => `<label class="check"><input type="checkbox" data-lcsec="${mi}" value="${tp}"${sel.includes(tp) ? ' checked' : ''}>${LC_TYPE[tp]} <span class="note">${desc(tp)}</span></label>`).join('')}</fieldset>
-      <dl><dt>음원</dt><dd>약 ${lcMB((t.packs || [])[mi] || 0)}MB (시작 전에 받아요)</dd></dl>
+      <dl><dt>음원</dt><dd>약 ${lcMB(mb)}MB (시작 전에 받아요)</dd></dl>
       <div class="best">${bestText(done, a => esc(lcSecTag(a)).trim())}</div>
       ${sel.length ? `<button class="btn primary" data-act="lcModule" data-mi="${mi}">${esc(m.name)} 시작 · ${n}문제</button>`
         : `<button class="btn primary" disabled>섹션을 하나 이상 고르세요</button>`}</article>`;
-  }).join('');
+  };
+  const cards = t.modules.map((m, mi) => card(mi)).join('') + (t.modules.length > 1 ? card('all') : '');
   return `<div class="home">
     <div class="qhead" style="margin:0"><h2 style="font-size:24px">리스닝 ${esc(t.title)}</h2><button class="btn small" data-act="home">회차 목록</button></div>
     <ul class="note lcrules"><li>음원은 <b>한 번만</b> 나오고 다시 들을 수 없어요.</li><li>문제는 한 화면에 하나씩 나와요. Best Response·Conversation·Announcement는 문제마다 <b>20초</b>, Academic Talk는 <b>30초</b>예요.</li>
@@ -87,10 +102,12 @@ function viewLcPick() {
     <section class="tests">${cards}</section></div>`;
 }
 function startLcModule(mi) {
-  const t = S.lcPick.test, sel = lcPicked(mi), all = lcTypesOf(t.modules[mi]);
+  const t = S.lcPick.test, both = mi === 'all', m = lcPickModule(t, mi), sel = lcPicked(mi), all = lcTypesOf(m);
   if (!sel.length) return;
   const secs = sel.length === all.length ? null : sel;  // 전부 고르면 모듈 전체
-  S.exam = { kind: 'lc', test: t, showAnswers: S.lcPick.showAnswers, mod: mi, secs, answers: {}, startedAt: null, step: -1, phase: null, qEndsAt: null, used: [] };
+  // src: 원래 회차 (끝난 뒤 모듈 고르는 화면으로 돌아갈 때 쓴다)
+  const test = both ? { id: t.id, set: t.set, no: t.no, title: t.title, packs: t.packs, mods: lcModsOf(m, sel), modules: [m], src: t } : t;
+  S.exam = { kind: 'lc', test, both, showAnswers: S.lcPick.showAnswers, mod: both ? 0 : mi, secs, answers: {}, startedAt: null, step: -1, phase: null, qEndsAt: null, used: [] };
   LC.ask = ''; persist(); S.screen = 'exam'; render(); window.scrollTo(0, 0);
   lcLoad();
 }
@@ -104,40 +121,48 @@ function lcQuit() {
 function lcRelease() {
   LC.cur = null; lcUnload();
   if (LC.clips) Object.values(LC.clips).forEach(u => URL.revokeObjectURL(u));
-  LC.clips = null; LC.key = ''; LC.got = 0; LC.err = ''; LC.loading = false; LC.blocked = false;
+  if (LC.ctl) { try { LC.ctl.abort(); } catch (e) {} }
+  LC.clips = null; LC.key = ''; LC.got = 0; LC.err = ''; LC.loading = false; LC.blocked = false; LC.tok = null; LC.ctl = null;
 }
 function b64bytes(b64) { const s = atob(b64), a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; }
+// 이어 풀기면 고른 섹션이 있는 모듈마다 묶음을 차례로 받고, 음원 이름 앞에 "모듈:"을 붙인다 (lcBothModule과 같은 이름)
 async function lcLoad() {
   const e = S.exam; if (!e || e.kind !== 'lc') return;
-  const key = e.test.id + '_m' + e.mod;
+  const mods = e.both ? e.test.mods : [e.mod], key = e.test.id + '_m' + (e.both ? 'all' + mods.join('') : e.mod);
   if (LC.key === key && (LC.clips || LC.loading)) return;
-  lcRelease(); LC.key = key; LC.loading = true; LC.need = (e.test.packs || [])[e.mod] || 0;
+  lcRelease();
+  const tok = LC.tok = {}, live = () => LC.tok === tok;
+  LC.key = key; LC.loading = true; LC.need = mods.reduce((n, mi) => n + ((e.test.packs || [])[mi] || 0), 0);
   render();
   // 45초 동안 한 글자도 오지 않으면 끊고 '다시 받기'를 보여 준다
-  const ctl = window.AbortController ? new AbortController() : null;
+  const ctl = LC.ctl = window.AbortController ? new AbortController() : null;
   let last = Date.now();
   const dog = setInterval(() => { if (ctl && Date.now() - last > 45000) ctl.abort(); }, 2000);
   const SLOW = '음원을 받는 데 너무 오래 걸려요. 인터넷 연결을 확인하고 다시 받아 주세요.';
+  const clips = {}, drop = () => Object.values(clips).forEach(u => URL.revokeObjectURL(u));
   try {
-    let res;
-    try { res = await fetch(window.API_URL, { method: 'POST', body: JSON.stringify({ action: 'getAudio', code: S.code.trim(), id: e.test.id, module: e.mod }), signal: ctl ? ctl.signal : undefined }); }
-    catch (x) { throw new Error(ctl && ctl.signal.aborted ? SLOW : '서버에 연결할 수 없어요. 인터넷 연결을 확인해 주세요.'); }
-    let text;
-    try {
-      if (res.body && res.body.getReader) {  // 받은 만큼 진행 막대를 채운다
-        const reader = res.body.getReader(), parts = [];
-        for (;;) { const { done, value } = await reader.read(); if (done) break; last = Date.now(); parts.push(value); LC.got += value.length; lcProgress(); }
-        text = await new Blob(parts).text();
-      } else { text = await res.text(); LC.got = LC.need; }
-    } catch (x) { throw new Error(ctl && ctl.signal.aborted ? SLOW : '음원을 받다가 끊겼어요. 다시 받아 주세요.'); }
-    let j; try { j = JSON.parse(text); } catch (x) { throw new Error('음원을 받지 못했어요. 잠시 후 다시 시도해 주세요.'); }
-    if (!j.ok) throw new Error(j.error || '음원을 받지 못했어요.');
-    const clips = {};
-    Object.entries(j.pack.clips).forEach(([k, b64]) => { clips[k] = URL.createObjectURL(new Blob([b64bytes(b64)], { type: 'audio/mpeg' })); });
-    if (LC.key === key) LC.clips = clips;
-  } catch (x) { if (LC.key === key) LC.err = x.message; }
+    for (const mi of mods) {
+      if (!live()) break;
+      let res;
+      try { res = await fetch(window.API_URL, { method: 'POST', body: JSON.stringify({ action: 'getAudio', code: S.code.trim(), id: e.test.id, module: mi }), signal: ctl ? ctl.signal : undefined }); }
+      catch (x) { throw new Error(ctl && ctl.signal.aborted ? SLOW : '서버에 연결할 수 없어요. 인터넷 연결을 확인해 주세요.'); }
+      let text;
+      try {
+        if (res.body && res.body.getReader) {  // 받은 만큼 진행 막대를 채운다
+          const reader = res.body.getReader(), parts = [];
+          for (;;) { const { done, value } = await reader.read(); if (done) break; last = Date.now(); parts.push(value); if (live()) { LC.got += value.length; lcProgress(); } }
+          text = await new Blob(parts).text();
+        } else { text = await res.text(); if (live()) LC.got += (e.test.packs || [])[mi] || 0; }
+      } catch (x) { throw new Error(ctl && ctl.signal.aborted ? SLOW : '음원을 받다가 끊겼어요. 다시 받아 주세요.'); }
+      let j; try { j = JSON.parse(text); } catch (x) { throw new Error('음원을 받지 못했어요. 잠시 후 다시 시도해 주세요.'); }
+      if (!j.ok) throw new Error(j.error || '음원을 받지 못했어요.');
+      Object.entries(j.pack.clips).forEach(([k, b64]) => { clips[(e.both ? mi + ':' : '') + k] = URL.createObjectURL(new Blob([b64bytes(b64)], { type: 'audio/mpeg' })); });
+    }
+    if (live()) LC.clips = clips; else drop();
+  } catch (x) { drop(); if (live()) LC.err = x.message; }
   clearInterval(dog);
-  if (LC.key === key) LC.loading = false;
+  if (!live()) return;
+  LC.loading = false; LC.ctl = null;
   if (S.exam && S.exam.kind === 'lc' && S.screen === 'exam') render();
 }
 function lcProgress() {
@@ -282,8 +307,10 @@ function lcTopBar() {
 function viewLcExam() {
   const e = S.exam, m = e.test.modules[e.mod], steps = lcStepsOf(e), total = lcCount(m, e.secs);
   const part = e.secs ? ` (${esc(lcSecNames(e.secs))})` : '';
-  // 섹션만 골라 풀 때는 원래 문항 번호와 함께 이번에 푸는 문항 중 몇 번째인지 보여 준다
-  const where = (n, pos) => (e.secs ? `Question ${n} · ${pos}/${total}` : `Question ${n} of ${total}`);
+  // 섹션만 골라 풀거나 이어 풀 때는 원래 문항 번호와 함께 이번에 푸는 문항 중 몇 번째인지 보여 준다 (이어 풀기는 모듈도)
+  const where = (it, n, pos) => (e.both ? `Module ${it.mi + 1} · Question ${n} · ${pos}/${total}` : e.secs ? `Question ${n} · ${pos}/${total}` : `Question ${n} of ${total}`);
+  const intro = e.both ? `Module 1과 2에서 ${e.secs ? '고른 섹션 ' : ''}<b>${total}문제</b>를 이어서 풀어요.`
+    : e.secs ? `${m.name}에서 고른 섹션 <b>${total}문제</b>를 풀어요.` : `${m.name}은 <b>${total}문제</b>예요.`;
   // 안내 화면 (처음) 또는 새로고침 뒤 음원을 다시 받는 화면
   if (e.step < 0 || !LC.clips || e.resumed) {
     // 새로고침으로 멈춘 순간 그 문제에 남아 있던 시간을 적어 둔다 (이어서 풀 때 그만큼만 준다)
@@ -296,7 +323,7 @@ function viewLcExam() {
     return `<div class="sheet stack lcintro">
       <div class="eyebrow">Listening · ${m.name}</div>
       <h2>${e.step < 0 ? `${esc(e.test.title)} ${m.name}${part}` : '이어서 풀기'}</h2>
-      ${e.step < 0 ? `<p class="note" style="margin:0">${e.secs ? `${m.name}에서 고른 섹션 <b>${total}문제</b>를 풀어요.` : `${m.name}은 <b>${total}문제</b>예요.`} The clock will show you how much time you have to complete each question. You WILL NOT be able to return to previous questions.</p>
+      ${e.step < 0 ? `<p class="note" style="margin:0">${intro} The clock will show you how much time you have to complete each question. You WILL NOT be able to return to previous questions.</p>
       <ul class="note lcrules"><li>음원은 한 번만 나와요.</li><li>Best Response·Conversation·Announcement는 문제마다 20초, Academic Talk는 30초예요.</li><li>답을 고르면 Next로 넘어가요. 시간이 다 되면 저절로 넘어가요.</li></ul>`
         : `<p class="note" style="margin:0">페이지를 새로 열어서 음원을 다시 받아요. 듣던 음원은 다시 나오지 않고, 풀던 문제는 남아 있던 시간만큼 이어서 풀어요.</p>`}
       ${status}
@@ -308,18 +335,18 @@ function viewLcExam() {
   const blocked = LC.blocked && e.phase === 'audio' ? `<div class="note">소리가 멈췄어요. 버튼을 누르면 멈춘 곳부터 이어서 나와요.</div><div><button class="btn primary" data-act="lcPlay">▶ 소리 재생</button></div>` : '';
   const listening = `<div class="sheet lclisten"><div class="lcicon" aria-hidden="true">🎧</div><div class="note">듣는 중이에요. 음원은 한 번만 나와요.</div>
     <div class="lcbar thin"><div id="lcplay" style="width:0%"></div></div>${blocked}</div>`;
-  const options = q => { const k = e.mod + '-' + q.n, cur = e.answers[k];
+  const options = q => { const k = lcKey(e, it, q), cur = e.answers[k];
     return `<div class="sheet qs"><fieldset><legend><span class="num">${q.n}.</span>${q.q ? esc(q.q) : '가장 알맞은 응답을 고르세요.'}</legend>
       ${q.c.map((c, ci) => `<label class="opt"><input type="radio" name="lc${k}" data-lck="${k}" value="${LET[ci]}"${cur === LET[ci] ? ' checked' : ''}><b>(${LET[ci]})</b><span>${esc(c)}</span></label>`).join('')}</fieldset></div>
       <div class="navrow"><span class="note">답을 고르면 Next를 누를 수 있어요.</span><button class="btn primary" data-act="lcNext"${cur ? '' : ' disabled'}>Next</button></div>`; };
   if (st.t === 'resp') {
-    return `<div class="qhead"><h2>Choose the best response.</h2><span class="note num">${where(st.q.n, st.pos)}</span></div>
+    return `<div class="qhead"><h2>Choose the best response.</h2><span class="note num">${where(it, st.q.n, st.pos)}</span></div>
       ${e.phase === 'audio' ? listening : options(st.q)}`;
   }
   if (st.t === 'listen') {
-    return `<div class="qhead"><h2>${esc(it.heading)}</h2><span class="note num">Questions ${it.from}–${it.to}${e.secs ? ` · ${st.from}–${st.to}/${total}` : ` of ${total}`}</span></div>${listening}`;
+    return `<div class="qhead"><h2>${esc(it.heading)}</h2><span class="note num">${e.both ? `Module ${it.mi + 1} · ` : ''}Questions ${it.from}–${it.to}${e.secs || e.both ? ` · ${st.from}–${st.to}/${total}` : ` of ${total}`}</span></div>${listening}`;
   }
-  return `<div class="qhead"><h2>${esc(it.heading)}</h2><span class="note num">${where(st.q.n, st.pos)}</span></div>${options(st.q)}`;
+  return `<div class="qhead"><h2>${esc(it.heading)}</h2><span class="note num">${where(it, st.q.n, st.pos)}</span></div>${options(st.q)}`;
 }
 
 // 이어서 풀기 화면: 음원을 받을 수 없을 때도 빠져나갈 수 있게
@@ -385,42 +412,53 @@ function rvSync() {
   if (LCR.au && LCR.cur && !document.querySelector(`.rvplay[data-clip="${CSS.escape(LCR.cur)}"]`)) LCR.au.pause();
   rvTick();
 }
+// 기록이 다루는 모듈들 (Module 1 + 2 이어 풀기 기록은 module이 null이고, 채점된 문항이 있는 모듈만)
+const rvMods = (r, t) => { if (r.module != null) return [r.module];
+  const ms = [...new Set(r.rows.map(x => x.mi))].filter(i => i === 0 || i === 1).sort(); return ms.length ? ms : t.modules.map((m, i) => i); };
+// 음원 이름은 "모듈:이름"으로 둔다 (모듈 두 개를 받아도 이름이 겹치지 않게)
 async function rvAudioLoad() {
-  const V = S.review; if (!V || !V.r || !V.r.lc) return;
-  const id = V.r.lc.id, mi = V.r.module, key = id + '_m' + mi;
+  const V = S.review; if (!V || !V.r || !V.r.lc || !V.content) return;
+  const id = V.r.lc.id, mods = rvMods(V.r, V.content.test), key = id + '_m' + mods.join('');
   if (LCR.key === key && (LCR.clips || LCR.loading)) return;
   rvRelease(); lcMediaFree();
   const tok = LCR.tok = {}; LCR.key = key; LCR.loading = true; render();
+  const clips = {}, drop = () => Object.values(clips).forEach(u => URL.revokeObjectURL(u));
   try {
-    const j = await api('getAudio', { code: S.code.trim(), id, module: mi });
-    const clips = {};
-    Object.entries(j.pack.clips).forEach(([k, b64]) => { clips[k] = URL.createObjectURL(new Blob([b64bytes(b64)], { type: 'audio/mpeg' })); });
-    if (LCR.tok === tok) LCR.clips = clips; else Object.values(clips).forEach(u => URL.revokeObjectURL(u));
-  } catch (e) { if (LCR.tok === tok) LCR.err = e.message; }
+    for (const mi of mods) {
+      const j = await api('getAudio', { code: S.code.trim(), id, module: mi });
+      Object.entries(j.pack.clips).forEach(([k, b64]) => { clips[mi + ':' + k] = URL.createObjectURL(new Blob([b64bytes(b64)], { type: 'audio/mpeg' })); });
+      if (LCR.tok !== tok) break;
+    }
+    if (LCR.tok === tok) LCR.clips = clips; else drop();
+  } catch (e) { drop(); if (LCR.tok === tok) LCR.err = e.message; }
   if (LCR.tok !== tok) return;
   LCR.loading = false;
   if (S.screen === 'review') render();
 }
-// 리스닝 다시 보기: 문항 묶음마다 음원(받았으면)과 문제
+// 리스닝 다시 보기: 모듈마다 문항 묶음별로 음원(불러왔으면)과 문제
 function lcReviewBody(V) {
-  const r = V.r, t = V.content.test, m = t.modules[r.module], by = rowMap(r.rows);
-  if (!m) return '';
-  const key = r.lc.id + '_m' + r.module, mine = LCR.key === key, mb = lcMB((t.packs || [])[r.module] || 0);
+  const r = V.r, t = V.content.test, mods = rvMods(r, t), by = rowMap(r.rows);
+  if (!mods.length || mods.some(mi => !t.modules[mi])) return '';
+  const key = r.lc.id + '_m' + mods.join(''), mine = LCR.key === key;
+  const mb = lcMB(mods.reduce((n, mi) => n + ((t.packs || [])[mi] || 0), 0));
   const bar = mine && LCR.clips ? '' : mine && LCR.loading ? `<div class="banner">음원을 불러오는 중이에요… (약 ${mb}MB)</div>`
     : `<div class="toolbar"><button class="btn" data-act="rvAudio">음원 불러오기 · 약 ${mb}MB</button><span class="note">불러오면 이 화면에서 문항 묶음마다 다시 들을 수 있어요.</span></div>
        ${mine && LCR.err ? `<div class="banner bad">${esc(LCR.err)}</div>` : ''}`;
-  const items = m.items.map(it => {
-    it.questions.forEach(q => { const x = by[r.module + '-' + q.n]; if (x) V.seen.add(x.k); });
-    const qs = it.questions.filter(q => { const x = by[r.module + '-' + q.n]; return x && (!V.onlyWrong || !x.ok); });
-    if (!qs.length) return '';
-    const s = mine && LCR.clips && LCR.clips[it.clip] ? rvState(it.clip) : null;
-    const player = s ? `<div class="rvplay" data-clip="${esc(it.clip)}"><button class="btn small" data-act="rvPlay" data-clip="${esc(it.clip)}">${s.label}</button>
-      <input type="range" min="0" max="${s.max}" step="1" value="${s.value}" data-rvseek="${esc(it.clip)}" aria-label="${esc(it.heading)} 재생 위치" aria-valuetext="${s.text}"><span class="t num">${s.text}</span></div>` : '';
-    return `<section class="stack rvitem"><div class="qhead" style="margin:0"><h3>${esc(it.heading)}</h3><span class="note num">${LC_TYPE[it.type] || ''} · ${it.from === it.to ? `Question ${it.from}` : `Questions ${it.from}–${it.to}`}</span></div>
-      ${player}
-      ${qs.map(q => rvChoice(q.n, q.q || '가장 알맞은 응답을 고르세요.', q.c, by[r.module + '-' + q.n])).join('')}</section>`;
+  const body = mods.map(mi => {
+    const items = t.modules[mi].items.map(it => {
+      it.questions.forEach(q => { const x = by[mi + '-' + q.n]; if (x) V.seen.add(x.k); });
+      const qs = it.questions.filter(q => { const x = by[mi + '-' + q.n]; return x && (!V.onlyWrong || !x.ok); });
+      if (!qs.length) return '';
+      const clip = mi + ':' + it.clip, s = mine && LCR.clips && LCR.clips[clip] ? rvState(clip) : null;
+      const player = s ? `<div class="rvplay" data-clip="${esc(clip)}"><button class="btn small" data-act="rvPlay" data-clip="${esc(clip)}">${s.label}</button>
+        <input type="range" min="0" max="${s.max}" step="1" value="${s.value}" data-rvseek="${esc(clip)}" aria-label="${esc(it.heading)} 재생 위치" aria-valuetext="${s.text}"><span class="t num">${s.text}</span></div>` : '';
+      return `<section class="stack rvitem"><div class="qhead" style="margin:0"><h3>${esc(it.heading)}</h3><span class="note num">${LC_TYPE[it.type] || ''} · ${it.from === it.to ? `Question ${it.from}` : `Questions ${it.from}–${it.to}`}</span></div>
+        ${player}
+        ${qs.map(q => rvChoice(q.n, q.q || '가장 알맞은 응답을 고르세요.', q.c, by[mi + '-' + q.n])).join('')}</section>`;
+    }).join('');
+    return items && mods.length > 1 ? `<h3 class="rvmod">${esc(t.modules[mi].name)}</h3>${items}` : items;
   }).join('');
-  return items ? bar + items : '';
+  return body ? bar + body : '';
 }
 
 /* ---------- 이벤트 ---------- */
@@ -428,7 +466,7 @@ document.addEventListener('click', ev => {
   const b = ev.target.closest('[data-act]'); if (!b) return;
   const act = b.dataset.act;
   if (act === 'lcStart') startLc(b.dataset.id);
-  else if (act === 'lcModule') startLcModule(+b.dataset.mi);
+  else if (act === 'lcModule') startLcModule(b.dataset.mi === 'all' ? 'all' : +b.dataset.mi);
   else if (act === 'lcBegin') lcBegin();
   else if (act === 'lcNext') lcNext();
   else if (act === 'lcRetry') { LC.err = ''; LC.key = ''; lcLoad(); }
@@ -444,7 +482,7 @@ document.addEventListener('click', ev => {
 document.addEventListener('change', ev => {
   const el = ev.target;
   if (el.type === 'checkbox' && el.dataset.lcsec != null && S.lcPick) {
-    const mi = +el.dataset.lcsec, all = lcTypesOf(S.lcPick.test.modules[mi]);
+    const mi = el.dataset.lcsec === 'all' ? 'all' : +el.dataset.lcsec, all = lcTypesOf(lcPickModule(S.lcPick.test, mi));
     if (!S.lcSecs || S.lcSecs.id !== S.lcPick.test.id) S.lcSecs = { id: S.lcPick.test.id };
     S.lcSecs[mi] = all.filter(tp => document.querySelector(`input[data-lcsec="${mi}"][value="${tp}"]`).checked);
     render(); return;

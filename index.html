@@ -54,13 +54,15 @@ const fmtTime = s => { s = Math.max(0, Math.round(s)); return String(Math.floor(
 const fmtDate = ms => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const fmtMin = m => (m % 1 ? `${Math.floor(m)}분 ${Math.round((m % 1) * 60)}초` : `${m}분`);
 const modName = mi => (mi === 0 || mi === 1 ? `Module ${mi + 1}` : mi === 'w' ? '빈칸' : '전체');
+// 리스닝에서 모듈이 없으면 Module 1 + 2 이어 풀기다
+const lcModName = mi => (mi == null ? 'Module 1 + 2' : modName(mi));
 const span = p => (p.from === p.to ? `${p.from}` : `${p.from}–${p.to}`);
 // 닫힌 회차에 낸 답안은 점수를 돌려받지 않는다 (score가 null)
 const scoreText = a => (a.score == null ? '제출함' : `${a.score}/${a.total}`);
-const recLabel = a => (a.practice ? `빈칸 TEST ${span(a.practice)}` : a.lc ? `리스닝 ${a.lc.title} · ${modName(a.mod)}${a.secs ? ` (${lcSecNames(a.secs)})` : ''}`
+const recLabel = a => (a.practice ? `빈칸 TEST ${span(a.practice)}` : a.lc ? `리스닝 ${a.lc.title} · ${lcModName(a.mod)}${a.secs ? ` (${lcSecNames(a.secs)})` : ''}`
   : a.testId != null ? `TEST ${a.testId} · ${modName(a.mod)}` : a.label || '기록');
 // 결과·다시 보기 화면 제목 (HTML)
-const recTitle = r => (r.practice ? `빈칸 TEST ${span(r.practice)}` : r.lc ? `리스닝 ${esc(r.lc.title)} · ${modName(r.module)}${r.secs ? ` (${esc(lcSecNames(r.secs))})` : ''}`
+const recTitle = r => (r.practice ? `빈칸 TEST ${span(r.practice)}` : r.lc ? `리스닝 ${esc(r.lc.title)} · ${lcModName(r.module)}${r.secs ? ` (${esc(lcSecNames(r.secs))})` : ''}`
   : r.testId != null ? `TEST ${esc(r.testId)} · ${modName(r.module)}` : esc(r.label || '기록'));
 const rowLabel = x => (x.t != null ? `T${x.t} ` : '') + `M${x.mi + 1}-${x.n}`;
 
@@ -177,7 +179,7 @@ async function finish() {
   const who = { name: S.name.trim(), period: S.period, cls: S.cls };
   const body = Object.assign(words
     ? { code: S.code.trim(), from: e.from, to: e.to, limit: e.limit, answers: e.answers, used: e.used, startedAt: e.startedAt }
-    : { code: S.code.trim(), id: e.test.id, module: e.mod, limit: e.limit, answers: e.answers, used: e.used, startedAt: e.startedAt }, who, { attempt: e.attempt }, lc && e.secs ? { secs: e.secs } : {});
+    : { code: S.code.trim(), id: e.test.id, module: e.both ? 'both' : e.mod, limit: e.limit, answers: e.answers, used: e.used, startedAt: e.startedAt }, who, { attempt: e.attempt }, lc && e.secs ? { secs: e.secs } : {});
   let j = null, err = '';
   for (let i = 0; i < 3 && !j; i++) {
     try { j = await api(words ? 'submitWords' : lc ? 'submitListening' : 'submit', body); } catch (x) { err = x.message; await new Promise(r => setTimeout(r, 1500)); }
@@ -186,9 +188,9 @@ async function finish() {
     S.exam = null; lsSet(':exam', null);
     // 같은 회차의 다른 모듈을 바로 풀 수 있게
     S.pick = words || lc ? null : { test: e.test, showAnswers: e.showAnswers };
-    S.lcPick = lc ? { test: e.test, showAnswers: e.showAnswers } : null;
+    S.lcPick = lc ? { test: e.test.src || e.test, showAnswers: e.showAnswers } : null;
     const r = j.result;
-    addMine({ id: r.id, testId: r.testId, module: r.module, mod: words ? 'w' : e.mod, practice: r.practice || null, lc: r.lc || null, secs: r.secs || null,
+    addMine({ id: r.id, testId: r.testId, module: r.module, mod: words ? 'w' : e.both ? null : e.mod, practice: r.practice || null, lc: r.lc || null, secs: r.secs || null,
       score: r.score, total: r.total, finishedAt: r.finishedAt, hidden: !!r.hidden });
     S.result = { r, showAnswers: j.showAnswers, status: 'ok', onlyWrong: true };
   } else {
