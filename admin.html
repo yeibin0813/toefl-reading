@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>리딩 모의고사 관리자</title>
+<title>모의고사 관리자</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="style.css">
@@ -17,39 +17,49 @@
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const ssGet = k => { try { return sessionStorage.getItem('toefl-admin:' + k); } catch (e) { return null; } };
 const ssSet = (k, v) => { try { v == null ? sessionStorage.removeItem('toefl-admin:' + k) : sessionStorage.setItem('toefl-admin:' + k, v); } catch (e) {} };
-const PART_LABEL = { '0w': 'M1 단어', '0r': 'M1 리딩', '1w': 'M2 단어', '1r': 'M2 리딩' };
+const PART_LABEL = { '0w': 'M1 단어', '0r': 'M1 리딩', '1w': 'M2 단어', '1r': 'M2 리딩', resp: '응답 고르기', conv: '대화', ann: '공지', talk: '강의' };
+const LC_TYPE = { response: '응답 고르기', conversation: '대화', announcement: '공지', talk: '강의' };
 const modName = mi => (mi === 0 || mi === 1 ? `M${mi + 1}` : '전체');
 // 빈칸 모아 풀기 기록은 testId가 없고 practice: { from, to }가 있다.
-const testLabel = a => (!a.practice ? `TEST ${a.testId}` : a.practice.from === a.practice.to ? `빈칸 TEST ${a.practice.from}` : `빈칸 TEST ${a.practice.from}–${a.practice.to}`);
+// 리스닝 기록은 lc: { id, title }가 있다.
+const testLabel = a => (a.lc ? `리스닝 ${a.lc.title}` : !a.practice ? `TEST ${a.testId}` : a.practice.from === a.practice.to ? `빈칸 TEST ${a.practice.from}` : `빈칸 TEST ${a.practice.from}–${a.practice.to}`);
 const modLabel = a => (a.practice ? '빈칸' : modName(a.module));
 const rowLabel = x => (x.t != null ? `T${x.t} ` : '') + `M${x.mi + 1}-${x.n}`;
 // 기간·반·회차 필터 (빈 값이면 전체)
 const inFilter = a => (!S.period || a.period === S.period) && (!S.cls || a.cls === S.cls) &&
-  (S.filter === 'all' || (S.filter === 'words' ? !!a.practice : !a.practice && String(a.testId) === S.filter));
+  (S.filter === 'all' || (S.filter === 'words' ? !!a.practice : S.filter === 'lc' ? !!a.lc : !a.practice && !a.lc && String(a.testId) === S.filter));
 const fmtDate = ms => { const d = new Date(ms); return `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const fmtTime = s => { s = Math.max(0, Math.round(s || 0)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); };
 
-const S = { pw: ssGet('pw') || '', loggedIn: false, tab: 'results', busy: '', msg: null, settings: null,
+// busy: 지금 진행 중인 요청들 ({ results: true, lc: true, ... }). 하나가 끝나도 다른 요청의 '불러오는 중'은 그대로 둔다.
+// file / lcFile: 올리려고 고른 파일 (화면을 다시 그려도 사라지지 않게 여기 둔다)
+const S = { pw: ssGet('pw') || '', loggedIn: false, tab: 'results', busy: {}, msg: null, settings: null, file: null, lcFile: null,
   results: null, period: '', cls: '', filter: 'all', sel: null, onlyWrong: true, tests: null, confirm: null };
 
 const call = (action, body) => api(action, Object.assign({ pw: S.pw }, body || {}));
 function flash(kind, text) { S.msg = { kind, text }; render(); clearTimeout(flash.t); flash.t = setTimeout(() => { S.msg = null; render(); }, 4000); }
-async function run(key, fn) { S.busy = key; render(); try { await fn(); } catch (e) { flash('bad', e.message); } S.busy = ''; render(); }
+async function run(key, fn) {
+  if (S.busy[key]) return;
+  S.busy[key] = true; render();
+  try { await fn(); } catch (e) { flash('bad', e.message); }
+  delete S.busy[key]; render();
+}
 
 async function login(pw) {
   S.pw = pw;
   await run('login', async () => {
     const j = await call('adminLogin'); S.settings = j.settings; S.loggedIn = true; ssSet('pw', pw);
-    loadResults(); loadTests();
+    loadResults(); loadTests(); loadLc();
   });
   if (!S.loggedIn) S.pw = '';
 }
 async function loadResults() { await run('results', async () => { S.results = (await call('listResults')).results; }); }
 async function loadTests() { await run('tests', async () => { const j = await call('listTests'); S.tests = j.tests; }); }
+async function loadLc() { await run('lc', async () => { const j = await call('listLc'); S.lc = j.tests; S.lcAudio = j.audio; }); }
 
 /* ---------- 화면 ---------- */
 function topBar() {
-  return `<header class="bar"><div class="wrap"><span class="brand">NEW TOEFL Reading<small>관리자</small></span><span class="spacer"></span>
+  return `<header class="bar"><div class="wrap"><span class="brand">NEW TOEFL<small>관리자</small></span><span class="spacer"></span>
     <a class="chip" href="index.html" style="color:inherit;text-decoration:none">학생 페이지 열기</a>
     ${S.loggedIn ? `<button class="link" data-act="logout">로그아웃</button>` : ''}</div></header>`;
 }
@@ -58,7 +68,7 @@ function viewLogin() {
   return `<form class="sheet form" id="login" style="max-width:380px"><h2>관리자 로그인</h2>
     <label class="field">비밀번호<input type="password" id="pw" autocomplete="current-password"></label>
     ${S.msg ? `<div class="banner ${S.msg.kind}">${esc(S.msg.text)}</div>` : ''}
-    <div><button class="btn primary" type="submit"${S.busy ? ' disabled' : ''}>${S.busy ? '확인 중…' : '로그인'}</button></div>
+    <div><button class="btn primary" type="submit"${S.busy.login ? ' disabled' : ''}>${S.busy.login ? '확인 중…' : '로그인'}</button></div>
     <p class="hint">처음 비밀번호는 Apps Script 코드에 적힌 기본값이에요. 로그인한 뒤 설정 탭에서 꼭 바꿔 주세요.</p></form>`;
 }
 function tabs() {
@@ -67,9 +77,9 @@ function tabs() {
 }
 
 function viewResults() {
-  if (!S.results) return `<div class="empty">${S.busy === 'results' ? '불러오는 중…' : '기록을 불러오지 못했어요.'}</div>`;
+  if (!S.results) return `<div class="empty">${S.busy.results ? '불러오는 중…' : '기록을 불러오지 못했어요.'}</div>`;
   const list = S.results.filter(inFilter);
-  const testIds = [...new Set(S.results.filter(a => !a.practice).map(a => a.testId))].sort((a, b) => a - b);
+  const testIds = [...new Set(S.results.filter(a => !a.practice && !a.lc).map(a => a.testId))].sort((a, b) => a - b);
   const hasWords = S.results.some(a => a.practice);
   // 기간은 기록에 있는 것만, 반은 고른 기간의 기록에 있는 것만 (괄호 안은 기록 수)
   const periods = [...new Set(S.results.map(a => a.period).filter(Boolean))].sort().reverse();
@@ -82,11 +92,11 @@ function viewResults() {
     <div class="toolbar">
       <select id="period" aria-label="기간 선택"><option value="">전체 기간</option>${periods.map(p => `<option value="${esc(p)}"${S.period === p ? ' selected' : ''}>${esc(p)}</option>`).join('')}</select>
       <select id="cls" aria-label="반 선택"><option value="">전체 반</option>${classes.map(c => `<option value="${esc(c)}"${S.cls === c ? ' selected' : ''}>${esc(c)} (${counts[c]})</option>`).join('')}</select>
-      <select id="filter" aria-label="회차 선택"><option value="all">전체 회차</option>${hasWords ? `<option value="words"${S.filter === 'words' ? ' selected' : ''}>빈칸 모아 풀기</option>` : ''}${testIds.map(id => `<option value="${id}"${S.filter === String(id) ? ' selected' : ''}>TEST ${id}</option>`).join('')}</select>
+      <select id="filter" aria-label="회차 선택"><option value="all">전체 회차</option>${S.results.some(a => a.lc) ? `<option value="lc"${S.filter === 'lc' ? ' selected' : ''}>리스닝</option>` : ''}${hasWords ? `<option value="words"${S.filter === 'words' ? ' selected' : ''}>빈칸 모아 풀기</option>` : ''}${testIds.map(id => `<option value="${id}"${S.filter === String(id) ? ' selected' : ''}>TEST ${id}</option>`).join('')}</select>
       <span class="note">응시 <b class="num">${list.length}</b>회 · 학생 <b class="num">${people}</b>명 · 평균 정답률 <b class="num">${avg}</b></span>
       <span class="spacer"></span>
       <button class="btn small" data-act="csv"${list.length ? '' : ' disabled'}>CSV 복사</button>
-      <button class="btn small" data-act="reload"${S.busy === 'results' ? ' disabled' : ''}>${S.busy === 'results' ? '불러오는 중…' : '새로고침'}</button>
+      <button class="btn small" data-act="reload"${S.busy.results ? ' disabled' : ''}>${S.busy.results ? '불러오는 중…' : '새로고침'}</button>
     </div>
     <div class="tablebox">${list.length ? `<table><thead><tr><th>반</th><th>이름</th><th>시험</th><th>모듈</th><th>제출 시각</th><th>점수</th><th>M1 단어</th><th>M1 리딩</th><th>M2 단어</th><th>M2 리딩</th><th>소요</th><th></th></tr></thead><tbody>
       ${list.map(a => `<tr class="click${a.id === S.sel ? ' sel' : ''}" data-act="sel" data-id="${esc(a.id)}" tabindex="0">
@@ -101,9 +111,9 @@ function detail(a) {
   const rows = a.rows.filter(x => !S.onlyWrong || !x.ok);
   return `<section class="stack">
     <div class="qhead"><h2>${a.cls ? esc(a.cls) + ' · ' : ''}${esc(a.name)} · ${esc(testLabel(a))} ${a.practice ? '' : modName(a.module) + ' '}답안</h2><label class="check note"><input type="checkbox" id="onlyWrong" ${S.onlyWrong ? 'checked' : ''}> 틀린 문항만 보기</label></div>
-    <div class="stats">${['0w', '0r', '1w', '1r'].filter(k => a.parts[k]).map(k => `<div class="part"><div class="lbl">${PART_LABEL[k]}</div><div class="val">${esc(a.parts[k])}</div></div>`).join('')}</div>
+    <div class="stats">${['0w', '0r', '1w', '1r', 'resp', 'conv', 'ann', 'talk'].filter(k => a.parts[k]).map(k => `<div class="part"><div class="lbl">${PART_LABEL[k]}</div><div class="val">${esc(Array.isArray(a.parts[k]) ? a.parts[k].join('/') : a.parts[k])}</div></div>`).join('')}</div>
     <div class="tablebox">${rows.length ? `<table><thead><tr><th>문항</th><th>유형</th><th></th><th>학생 답</th><th>정답</th></tr></thead><tbody>
-      ${rows.map(x => `<tr class="${x.ok ? '' : 'badrow'}"><td class="num">${rowLabel(x)}</td><td>${x.kind === 'w' ? '단어' : '리딩'}</td><td class="mark ${x.ok ? 'ok' : 'bad'}">${x.ok ? 'O' : 'X'}</td>
+      ${rows.map(x => `<tr class="${x.ok ? '' : 'badrow'}"><td class="num">${rowLabel(x)}</td><td>${x.kind === 'w' ? '단어' : x.kind === 'l' ? LC_TYPE[x.type] || '리스닝' : '리딩'}</td><td class="mark ${x.ok ? 'ok' : 'bad'}">${x.ok ? 'O' : 'X'}</td>
         <td class="given ${x.ok ? '' : (x.given ? 'bad' : 'empty')}">${x.given ? esc(x.given) : '(빈칸)'}</td><td>${x.kind === 'w' ? `${esc(x.correct)} <span class="note">(${esc(x.full)})</span>` : esc(x.correct)}</td></tr>`).join('')}
       </tbody></table>` : `<div class="empty">틀린 문항이 없어요.</div>`}</div></section>`;
 }
@@ -117,14 +127,17 @@ function viewSettings() {
       <p class="hint">학생이 입장할 때 입력하는 코드예요. 바꾸면 이전 코드는 바로 막혀요. 비워 두면 아무도 입장할 수 없어요.</p>
       <label class="field">열린 회차<input type="text" id="open" autocomplete="off" value="${esc(s.open)}" placeholder="예: 1-5, 8"></label>
       <p class="hint">학생에게 보여 줄 회차예요. "1-5"처럼 범위로, "1, 3, 7"처럼 낱개로 적을 수 있어요. 비워 두면 올라온 회차가 모두 열려요.</p>
+      <label class="field">리스닝 열린 회차 · 새 문제집<input type="text" id="lcNew" autocomplete="off" value="${esc(s.lcNew || '')}" placeholder="예: 1-10"></label>
+      <label class="field">리스닝 열린 회차 · TPO<input type="text" id="lcTpo" autocomplete="off" value="${esc(s.lcTpo || '')}" placeholder="예: 7-20, 25"></label>
+      <p class="hint">리스닝도 회차 번호로 적어요 (새 문제집은 새 TEST 번호, TPO는 TPO TEST 번호). 비워 두면 그 세트가 모두 열려요.</p>
       <label class="check"><input type="checkbox" id="showAnswers" ${s.showAnswers ? 'checked' : ''}> 학생 결과 화면에 정답 보여 주기</label>
       <p class="hint">끄면 학생은 맞고 틀림만 보고, 정답은 볼 수 없어요.</p>
-      <div><button class="btn primary" type="submit"${S.busy === 'settings' ? ' disabled' : ''}>${S.busy === 'settings' ? '저장 중…' : '저장'}</button></div>
+      <div><button class="btn primary" type="submit"${S.busy.settings ? ' disabled' : ''}>${S.busy.settings ? '저장 중…' : '저장'}</button></div>
     </form>
     <form class="sheet form" id="pwForm"><h2>관리자 비밀번호 바꾸기</h2>
       <label class="field">새 비밀번호<input type="password" id="newPw" autocomplete="new-password"></label>
       <label class="field">한 번 더<input type="password" id="newPw2" autocomplete="new-password"></label>
-      <div><button class="btn" type="submit"${S.busy === 'pw' ? ' disabled' : ''}>${S.busy === 'pw' ? '바꾸는 중…' : '비밀번호 바꾸기'}</button></div>
+      <div><button class="btn" type="submit"${S.busy.pw ? ' disabled' : ''}>${S.busy.pw ? '바꾸는 중…' : '비밀번호 바꾸기'}</button></div>
     </form></div>`;
 }
 
@@ -133,15 +146,37 @@ function viewTests() {
   return `<div class="stack">
     <div class="sheet form"><h2>회차 올리기</h2>
       <p class="hint">tests.json 파일을 고르면 그 안의 회차가 추가돼요. 이미 있는 회차 번호는 새 내용으로 바뀌어요.</p>
-      <input type="file" id="file" accept=".json,application/json">
-      <div><button class="btn primary" data-act="upload"${S.busy === 'upload' ? ' disabled' : ''}>${S.busy === 'upload' ? '올리는 중…' : '올리기'}</button></div></div>
-    <div class="tablebox">${!list ? `<div class="empty">${S.busy === 'tests' ? '불러오는 중…' : '목록을 불러오지 못했어요.'}</div>` : list.length ? `<table><thead><tr><th>회차</th><th>Module 1</th><th>Module 2</th><th>열림</th><th></th></tr></thead><tbody>
+      <input type="file" id="file" accept=".json,application/json">${S.file ? `<span class="hint">고른 파일: <b>${esc(S.file.name)}</b></span>` : ''}
+      <div><button class="btn primary" data-act="upload"${S.busy.upload ? ' disabled' : ''}>${S.busy.upload ? '올리는 중…' : '올리기'}</button></div></div>
+    <div class="tablebox">${!list ? `<div class="empty">${S.busy.tests ? '불러오는 중…' : '목록을 불러오지 못했어요.'}</div>` : list.length ? `<table><thead><tr><th>회차</th><th>Module 1</th><th>Module 2</th><th>열림</th><th></th></tr></thead><tbody>
       ${list.map(t => `<tr><td class="num"><b>TEST ${t.id}</b></td>${t.modules.map(m => `<td>${m.minutes}분 · 단어 ${m.words} · 리딩 ${m.read}</td>`).join('')}<td>${isOpen(t.id) ? '<span class="mark ok">열림</span>' : '<span class="note">닫힘</span>'}</td>
         <td><button class="btn small danger" data-act="delTestAsk" data-id="${t.id}">삭제</button></td></tr>`).join('')}
-      </tbody></table>` : `<div class="empty">아직 올라온 회차가 없어요. 위에서 tests.json을 올려 주세요.</div>`}</div></div>`;
+      </tbody></table>` : `<div class="empty">아직 올라온 회차가 없어요. 위에서 tests.json을 올려 주세요.</div>`}</div>
+    ${viewLcTests()}</div>`;
 }
-function isOpen(id) {
-  const s = (S.settings && S.settings.open || '').trim(); if (!s) return true;
+// 리스닝: 드라이브 음원 폴더 상태, 회차 올리기(lc_tests.json), 세트별 목록
+function viewLcTests() {
+  const list = S.lc, a = S.lcAudio;
+  const miss = a && a.missing || [];
+  const audio = !a ? '' : !a.folder ? `<div class="banner warn">드라이브에 "토플 리스닝 음원" 폴더가 없어요. 음원을 올려야 학생이 리스닝을 풀 수 있어요.</div>`
+    : `<p class="hint">드라이브 "토플 리스닝 음원" 폴더: 음원 파일 <b>${a.files}개</b> (회차마다 모듈 2개 = 파일 2개)</p>` +
+      (a.dup ? `<div class="banner warn">같은 이름의 폴더가 ${a.dup + 1}개 있어요. 파일이 가장 많은 폴더를 쓰고 있어요. 나머지는 지워도 돼요.</div>` : '') +
+      (miss.length ? `<div class="banner warn">음원이 없는 모듈이 ${miss.length}개 있어요. 이 모듈은 학생이 시작할 수 없어요: ${esc(miss.slice(0, 12).join(', '))}${miss.length > 12 ? ` 외 ${miss.length - 12}개` : ''}</div>` : '');
+  const rows = set => (list || []).filter(t => t.set === set).map(t => `<tr><td class="num"><b>${esc(t.title)}</b></td>${t.modules.map(m => `<td>${m.count}문제</td>`).join('')}
+    <td>${isOpen(t.no, set === 'new' ? 'lcNew' : 'lcTpo') ? '<span class="mark ok">열림</span>' : '<span class="note">닫힘</span>'}</td>
+    <td><button class="btn small danger" data-act="delLcAsk" data-id="${esc(t.id)}">삭제</button></td></tr>`).join('');
+  const table = set => `<table><thead><tr><th>회차</th><th>Module 1</th><th>Module 2</th><th>열림</th><th></th></tr></thead><tbody>${rows(set)}</tbody></table>`;
+  return `<div class="sheet form"><h2>리스닝 회차</h2>${audio}
+      <p class="hint">리스닝 문제 파일(lc_tests.json)을 고르면 그 안의 회차가 추가돼요. 음원은 드라이브 폴더에서 따로 읽어요.</p>
+      <input type="file" id="lcFile" accept=".json,application/json">${S.lcFile ? `<span class="hint">고른 파일: <b>${esc(S.lcFile.name)}</b></span>` : ''}
+      <div><button class="btn primary" data-act="lcUpload"${S.busy.lcUpload ? ' disabled' : ''}>${S.busy.lcUpload ? '올리는 중…' : '올리기'}</button></div></div>
+    ${!list ? `<div class="tablebox"><div class="empty">${S.busy.lc ? '불러오는 중…' : '목록을 불러오지 못했어요.'}</div></div>`
+      : !list.length ? `<div class="tablebox"><div class="empty">아직 올라온 리스닝 회차가 없어요.</div></div>`
+      : `<h3 style="margin:8px 0 0">새 문제집 <span class="note">${list.filter(t => t.set === 'new').length}회차</span></h3><div class="tablebox">${table('new')}</div>
+         <h3 style="margin:8px 0 0">TPO <span class="note">${list.filter(t => t.set === 'tpo').length}회차</span></h3><div class="tablebox">${table('tpo')}</div>`}`;
+}
+function isOpen(id, key) {
+  const s = (S.settings && S.settings[key || 'open'] || '').trim(); if (!s) return true;
   return s.split(/[,\s]+/).filter(Boolean).some(p => { const m = p.match(/^(\d+)\s*[-~]\s*(\d+)$/); return m ? id >= +m[1] && id <= +m[2] : +p === id; });
 }
 function viewConfirm() {
@@ -165,7 +200,8 @@ document.addEventListener('submit', ev => {
   const f = ev.target;
   if (f.id === 'login') login(f.querySelector('#pw').value.trim());
   else if (f.id === 'settingsForm') run('settings', async () => {
-    const j = await call('saveSettings', { settings: { code: f.querySelector('#code').value, open: f.querySelector('#open').value, showAnswers: f.querySelector('#showAnswers').checked } });
+    const j = await call('saveSettings', { settings: { code: f.querySelector('#code').value, open: f.querySelector('#open').value, showAnswers: f.querySelector('#showAnswers').checked,
+      lcNew: f.querySelector('#lcNew').value, lcTpo: f.querySelector('#lcTpo').value } });
     S.settings = j.settings; flash('ok', '저장했어요.');
   });
   else if (f.id === 'pwForm') {
@@ -178,7 +214,19 @@ document.addEventListener('click', ev => {
   const b = ev.target.closest('[data-act]'); if (!b) return;
   const act = b.dataset.act;
   if (act === 'tab') { S.tab = b.dataset.tab; S.msg = null; render(); }
-  else if (act === 'logout') { S.loggedIn = false; S.pw = ''; ssSet('pw', null); S.results = S.tests = null; render(); }
+  else if (act === 'logout') { S.loggedIn = false; S.pw = ''; ssSet('pw', null); S.results = S.tests = S.lc = null; render(); }
+  else if (act === 'delLcAsk') { const id = b.dataset.id, t = (S.lc || []).find(x => x.id === id);
+    S.confirm = { title: `리스닝 ${t ? t.title : id}을 지울까요?`, text: '문제가 시트에서 지워져요. 드라이브 음원과 이미 제출된 결과는 그대로 남아요.', label: '지우기', fn: () => run('delLc', async () => { S.lc = (await call('deleteLc', { id })).tests; flash('ok', '지웠어요.'); }) }; render(); }
+  else if (act === 'lcUpload') {
+    const file = S.lcFile;
+    if (!file) return flash('bad', '먼저 lc_tests.json 파일을 골라 주세요.');
+    run('lcUpload', async () => {
+      let data; try { data = JSON.parse(await file.text()); } catch (e) { throw new Error('JSON 파일이 아니거나 형식이 깨졌어요.'); }
+      const j = await call('saveLc', { tests: data });
+      S.lc = j.tests; S.lcFile = null; flash('ok', `리스닝 추가 ${j.added}회차, 갱신 ${j.updated}회차.`);
+      loadLc();  // 빠진 음원 목록도 새로
+    });
+  }
   else if (act === 'reload') loadResults();
   else if (act === 'sel') { S.sel = S.sel === b.dataset.id ? null : b.dataset.id; render(); }
   else if (act === 'delAsk') { const a = S.results.find(x => x.id === b.dataset.id);
@@ -188,12 +236,12 @@ document.addEventListener('click', ev => {
   else if (act === 'cancel') { S.confirm = null; render(); }
   else if (act === 'confirmDo') { const fn = S.confirm.fn; S.confirm = null; fn(); }
   else if (act === 'upload') {
-    const inp = document.getElementById('file'), file = inp && inp.files && inp.files[0];
+    const file = S.file;
     if (!file) return flash('bad', '먼저 tests.json 파일을 골라 주세요.');
     run('upload', async () => {
       let data; try { data = JSON.parse(await file.text()); } catch (e) { throw new Error('JSON 파일이 아니거나 형식이 깨졌어요.'); }
       const j = await call('saveTests', { tests: data });
-      S.tests = j.tests; flash('ok', `추가 ${j.added}회차, 갱신 ${j.updated}회차.`);
+      S.tests = j.tests; S.file = null; flash('ok', `추가 ${j.added}회차, 갱신 ${j.updated}회차.`);
     });
   }
   else if (act === 'csv') {
@@ -207,7 +255,8 @@ document.addEventListener('click', ev => {
 document.addEventListener('keydown', ev => { if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches('tr[data-act="sel"]')) { ev.preventDefault(); ev.target.click(); } });
 document.addEventListener('change', ev => {
   const el = ev.target;
-  if (el.id === 'filter') { S.filter = el.value; S.sel = null; render(); }
+  if (el.id === 'file' || el.id === 'lcFile') { S[el.id] = el.files && el.files[0] || null; render(); }
+  else if (el.id === 'filter') { S.filter = el.value; S.sel = null; render(); }
   else if (el.id === 'period') { S.period = el.value; S.cls = ''; S.sel = null; render(); }
   else if (el.id === 'cls') { S.cls = el.value; S.sel = null; render(); }
   else if (el.id === 'onlyWrong') { S.onlyWrong = el.checked; render(); }

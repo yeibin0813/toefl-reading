@@ -130,6 +130,17 @@ button.ins.on { background: var(--accent); color: var(--accent-ink); }
 .exam-on .passage, .exam-on .words, .exam-on .qs { user-select: none; -webkit-user-select: none; }
 .exam-on input.blank { user-select: text; -webkit-user-select: text; }
 
+/* listening */
+.lcintro { max-width: 640px; }
+.lcrules { margin: 0; padding-left: 1.2em; display: grid; gap: 4px; }
+.lcbar { height: 12px; border-radius: 999px; background: var(--accent-soft); overflow: hidden; border: 1px solid var(--line); }
+.lcbar > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+.lcbar.thin { height: 6px; max-width: 360px; width: 100%; }
+.lclisten { display: grid; justify-items: center; gap: 12px; padding: 40px 20px; text-align: center; }
+.lcicon { font-size: 56px; line-height: 1; }
+.bar .vol { display: flex; align-items: center; gap: 4px; font-size: 14px; }
+.bar .vol input { width: 80px; accent-color: var(--bar-ink); }
+
 .modal { position: fixed; inset: 0; background: rgba(10,15,20,.5); display: grid; place-items: center; z-index: 20; padding: 16px; }
 .modal .box { background: var(--paper); color: var(--ink); border-radius: 12px; padding: 20px; max-width: 420px; width: 100%; display: grid; gap: 14px; }
 .modal .row { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
@@ -158,3 +169,4 @@ tr.badrow td { background: var(--bad-soft); }
 .hint { font-size: 13px; color: var(--muted); margin: 0; }
 @media (prefers-reduced-motion: no-preference) { .opt, .dot, button.ins, .tab { transition: background .12s, border-color .12s, color .12s; } }
 @media print { body { display: none; } }
+.lcexit { border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 8px; }

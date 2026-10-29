@@ -2,3 +2,5 @@
 tests*.json
 *.pdf
 .DS_Store
+lc_tests*.json
+*_m[12].json
