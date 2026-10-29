@@ -96,9 +96,10 @@ const API = {
     if (!(mi === 0 || mi === 1)) throw new Error('모듈을 다시 골라 주세요.');
     return { rawPack: lcFile_(t.id + '_m' + (mi + 1) + '.json').getBlob().getDataAsString() };
   },
+  // module이 'both'면 모든 모듈을 이어서 푼 답안이다 (기록 하나, module은 null)
   submitListening(r) {
     checkCode_(r.code);
-    const t = loadLc_(r.id), mi = Number(r.module);
+    const t = loadLc_(r.id), mi = r.module === 'both' ? null : Number(r.module);
     if (!t) throw new Error('회차를 찾을 수 없어요.');
     const secs = lcSecs_(t, mi, r.secs);
     const g = gradeLc_(t, r.answers || {}, mi, secs);
@@ -482,25 +483,28 @@ function lcAudioStatus_(tests) {
   tests.forEach(t => t.modules.forEach((m, mi) => { if (!names.has(t.id + '_m' + (mi + 1) + '.json')) missing.push(t.title + ' M' + (mi + 1)); }));
   return { folder: folders.length > 0, files: names.size, dup: Math.max(0, folders.length - 1), missing };
 }
-// 학생이 고른 섹션: 모듈에 있는 유형만 남긴다. 안 골랐거나 전부 골랐으면 null(모듈 전체)
+// 채점할 모듈 번호들: mi가 null이면 모든 모듈 (Module 1 + 2 이어 풀기)
+function lcMods_(t, mi) {
+  if (mi == null) return t.modules.map((m, i) => i);
+  if (!t.modules[mi]) throw new Error('모듈을 다시 골라 주세요.');
+  return [mi];
+}
+// 학생이 고른 섹션: 그 모듈(들)에 있는 유형만 남긴다. 안 골랐거나 전부 골랐으면 null(전체)
 function lcSecs_(t, mi, raw) {
-  const m = t.modules[mi]; if (!m || !Array.isArray(raw)) return null;
-  const present = Object.keys(LC_TYPE_NAME).filter(tp => m.items.some(it => it.type === tp));
+  if (!Array.isArray(raw) || (mi != null && !t.modules[mi])) return null;
+  const items = lcMods_(t, mi).flatMap(i => t.modules[i].items);
+  const present = Object.keys(LC_TYPE_NAME).filter(tp => items.some(it => it.type === tp));
   const chosen = present.filter(tp => raw.includes(tp));
   return !chosen.length || chosen.length === present.length ? null : chosen;
 }
-// 리스닝 한 모듈 채점 (secs가 있으면 그 섹션 문항만). 유형별 점수: resp Best Response, conv Conversation, ann Announcement, talk Academic Talk
+// 리스닝 채점 (secs가 있으면 그 섹션 문항만). 답 키는 "모듈-문항". 유형별 점수: resp Best Response, conv Conversation, ann Announcement, talk Academic Talk
 function gradeLc_(t, answers, mi, secs) {
-  const m = t.modules[mi]; if (!m) throw new Error('모듈을 다시 골라 주세요.');
-  const rows = [], parts = {}, items = m.items.filter(it => !secs || secs.includes(it.type));
-  items.forEach(it => it.questions.forEach(q => {
-    const k = mi + '-' + q.n, given = String(answers[k] || '');
-    rows.push({ k, mi, n: q.n, kind: 'l', type: it.type, given, correct: q.a, ok: given === q.a });
-  }));
-  const key = { response: 'resp', conversation: 'conv', announcement: 'ann', talk: 'talk' };
-  items.forEach(it => it.questions.forEach(q => {
-    const p = parts[key[it.type]] || (parts[key[it.type]] = [0, 0]); p[1]++; if (answers[mi + '-' + q.n] === q.a) p[0]++;
-  }));
+  const rows = [], parts = {}, key = { response: 'resp', conversation: 'conv', announcement: 'ann', talk: 'talk' };
+  lcMods_(t, mi).forEach(i => t.modules[i].items.filter(it => !secs || secs.includes(it.type)).forEach(it => it.questions.forEach(q => {
+    const k = i + '-' + q.n, given = String(answers[k] || ''), ok = given === q.a;
+    rows.push({ k, mi: i, n: q.n, kind: 'l', type: it.type, given, correct: q.a, ok });
+    const p = parts[key[it.type]] || (parts[key[it.type]] = [0, 0]); p[1]++; if (ok) p[0]++;
+  })));
   return { rows, parts, score: rows.filter(r => r.ok).length, total: rows.length };
 }
 
@@ -556,11 +560,11 @@ function appendResult_(rec) {
     const lim = rec.limit > 0 ? ' (제한 ' + rec.limit + '분)' : ' (제한 없음)';
     // 빈칸 모음: "빈칸 5분 2초 (제한 없음)" / 모듈 하나: "M1 12분 3초 (제한 18분)" / 전체: "12분 3초 + 8분 0초"
     const used = rec.practice ? '빈칸 ' + fmt(rec.used[0]) + lim
-      : rec.lc ? 'M' + (rec.module + 1) + ' ' + fmt(rec.used[0])
+      : rec.lc ? (rec.module != null ? 'M' + (rec.module + 1) + ' ' : '') + fmt(rec.used[0])
       : rec.module != null ? 'M' + (rec.module + 1) + ' ' + fmt(rec.used[0]) + lim
       : rec.used.map(fmt).join(' + ');
     const label = rec.practice ? '빈칸 TEST ' + rec.practice.from + (rec.practice.to !== rec.practice.from ? '-' + rec.practice.to : '')
-      : rec.lc ? '리스닝 ' + rec.lc.title + ' M' + (rec.module + 1) + (rec.secs ? ' (' + rec.secs.map(s => LC_TYPE_NAME[s]).join(' · ') + ')' : '')
+      : rec.lc ? '리스닝 ' + rec.lc.title + (rec.module != null ? ' M' + (rec.module + 1) : '') + (rec.secs ? ' (' + rec.secs.map(s => LC_TYPE_NAME[s]).join(' · ') + ')' : '')
       : 'TEST ' + rec.testId + (rec.module != null ? ' M' + (rec.module + 1) : '');
     const where = x => (x.t != null ? 'T' + x.t + ' ' : '') + 'M' + (x.mi + 1) + '-' + x.n;
     const wrong = rec.rows.filter(x => !x.ok);
@@ -597,12 +601,13 @@ function who_(r) {
 function mine_(who, name, cls) { const c = norm_(cls); return norm_(name) === who.name && (c === who.cls || !c); }
 function time_(v) { return v instanceof Date ? v.getTime() : Number(v) || 0; }
 // 결과 시트의 회차 칸("TEST 5 M1", "빈칸 TEST 1-10", "리스닝 NEW TOEFL 3 TEST 1 M2 (Best Response · Conversation)")에서 기록 종류를 읽는다
+// 리스닝 Module 1 + 2 이어 풀기는 M이 없다 ("리스닝 NEW TOEFL 3 TEST 1 (Conversation)")
 function labelInfo_(label) {
   const s = String(label == null ? '' : label).trim(), out = { testId: null, module: null, practice: null, lc: null, secs: null };
   let m;
   if ((m = s.match(/^빈칸 TEST (\d+)(?:-(\d+))?$/))) return Object.assign(out, { practice: { from: +m[1], to: +(m[2] || m[1]) } });
   if ((m = s.match(/^TEST (\d+)(?: M([12]))?$/))) return Object.assign(out, { testId: +m[1], module: m[2] ? m[2] - 1 : null });
-  if ((m = s.match(/^리스닝 (.+?) M([12])(?: \((.+)\))?$/))) {
+  if ((m = s.match(/^리스닝 (.+? TEST \d+)(?: M([12]))?(?: \((.+)\))?$/))) {
     // 이름을 NEW TOEFL 3으로 바꾸기 전에는 새 문제집 회차 제목이 "새 TEST 1"이었다
     const title = m[1], names = [[LC_SET_NAME.new, 'new'], [LC_SET_NAME.tpo, 'tpo'], ['새', 'new']];
     const hit = names.find(x => title.indexOf(x[0] + ' TEST ') === 0), set = hit && hit[1];
