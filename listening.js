@@ -473,7 +473,9 @@ function lcReviewBody(V) {
         <input type="range" min="0" max="${s.max}" step="1" value="${s.value}" data-rvseek="${esc(clip)}" aria-label="${esc(it.heading)} 재생 위치" aria-valuetext="${s.text}"><span class="t num">${s.text}</span></div>` : '';
       return `<section class="stack rvitem"><div class="qhead" style="margin:0"><h3>${esc(it.heading)}</h3><span class="note num">${LC_TYPE[it.type] || ''} · ${it.from === it.to ? `Question ${it.from}` : `Questions ${it.from}–${it.to}`}</span></div>
         ${player}
-        ${ix.l && it.type !== 'response' ? `<details class="rvscript" data-sk="${esc(sk)}"${LCR.open.has(sk) ? ' open' : ''}><summary>스크립트 · 해석 보기</summary>${rvLines(ix.l, it.questions.map(q => [q, ex.q[mi + '-' + q.n], by[mi + '-' + q.n]]))}</details>` : ''}
+        ${it.type === 'response' || !(ix.l || ix.s) ? '' : `<details class="rvscript" data-sk="${esc(sk)}"${LCR.open.has(sk) ? ' open' : ''}>${ix.l
+          ? `<summary>스크립트 · 해석 보기</summary>${rvLines(ix.l, it.questions.map(q => [q, ex.q[mi + '-' + q.n], by[mi + '-' + q.n]]))}`
+          : `<summary>스크립트 보기</summary><p class="rvplain">${esc(ix.s)}</p>`}</details>`}
         ${qs.map(q => rvChoice(q.n, q.q || (it.type === 'response' && ix.s ? ix.s : '가장 알맞은 응답을 고르세요.'), q.c, by[mi + '-' + q.n], '', ex.q[mi + '-' + q.n])).join('')}</section>`;
     }).join('');
     return items && mods.length > 1 ? `<h3 class="rvmod">${esc(t.modules[mi].name)}</h3>${items}` : items;
