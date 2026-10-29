@@ -63,7 +63,7 @@ const API = {
   getWords(r) {
     checkCode_(r.code);
     const sets = wordsSets_(r.from, r.to);
-    return { sets: sets.map(s => ({ t: s.t, mi: s.mi, start: s.start, text: String(s.text).replace(/\[([a-z]+)\]/g, (a, w) => '[' + w.length + ']') })) };
+    return { sets: sets.map(s => ({ t: s.t, mi: s.mi, start: s.start, text: wordsText_(s) })) };
   },
   submitWords(r) {
     checkCode_(r.code);
@@ -108,6 +108,70 @@ const API = {
       finishedAt: Date.now(), used: (r.used || []).map(Number), score: g.score, total: g.total, parts: g.parts, rows: g.rows
     };
     return saveResult_(rec, r.attempt, isLcOpen_(t));
+  },
+
+  // ---------- 내 기록 ----------
+  // 같은 반·이름으로 낸 기록 (최근 것부터). 반 칸이 빈 옛 기록은 이름만 맞으면 넣는다.
+  // 상세(JSON) 칸은 크니까 읽지 않고 회차 칸으로 종류를 알아낸다.
+  // 지금 닫힌 회차의 기록은 점수를 돌려주지 않는다 (닫힌 회차에 답을 바꿔 내 보며 점수로 정답을 알아내지 못하게).
+  myResults(r) {
+    checkCode_(r.code);
+    const who = who_(r), sheet = sheet_(SH.results), n = sheet.getLastRow() - 1, out = [];
+    if (n < 1) return { results: out };
+    const head = sheet.getRange(2, 1, n, 5).getValues(), tail = sheet.getRange(2, 14, n, 3).getValues(), open = openNow_();
+    for (let i = 0; i < n; i++) {
+      if (!tail[i][0] || !mine_(who, head[i][1], tail[i][2])) continue;
+      const info = labelInfo_(head[i][2]), shown = recOpen_(info, open);
+      out.push(Object.assign(info, { id: String(tail[i][0]), finishedAt: time_(head[i][0]), score: shown ? Number(head[i][3]) || 0 : null, total: Number(head[i][4]) || 0, hidden: !shown }));
+    }
+    // 선생님이 시트를 정렬해 두었을 수도 있어서 줄 순서 대신 제출 시각으로 줄 세운다
+    out.sort((a, b) => b.finishedAt - a.finishedAt);
+    return { results: out.slice(0, 300) };
+  },
+  // 기록 하나를 문제와 함께 다시 보기. 내 기록이고 지금 열린 회차일 때만 점수·채점 결과·문제(정답 뺀 것)를 보낸다.
+  // 정답은 정답 공개가 켜져 있을 때만 보낸다. 빈칸 모아 풀기는 지금 열린 회차의 문항만 보여 준다.
+  myResult(r) {
+    checkCode_(r.code);
+    const who = who_(r), sheet = sheet_(SH.results), n = sheet.getLastRow() - 1, id = String(r.id || '');
+    const ids = id && n > 0 ? sheet.getRange(2, 14, n, 1).getValues() : [];
+    let at = -1;
+    for (let i = ids.length - 1; i >= 0; i--) if (String(ids[i][0]) === id) { at = i + 2; break; }
+    // 두 번 읽는 사이에 줄이 지워지거나 정렬됐을 수 있어서 그 줄의 기록 ID를 다시 확인한다
+    const row = at > 0 ? sheet.getRange(at, 1, 1, 16).getValues()[0] : null;
+    if (!row || String(row[13]) !== id || !mine_(who, row[1], row[15])) throw new Error('기록을 찾을 수 없어요. 다시 시도해 주세요.');
+    let d = null; try { d = JSON.parse(row[12]); } catch (e) {}
+    d = d || {};
+    // 회차 칸보다 상세 칸이 정확하다 (리스닝 회차 ID, 모듈, 섹션)
+    const info = labelInfo_(row[2]), open = openNow_();
+    if (d.lc && d.lc.id) info.lc = { id: String(d.lc.id), title: String(d.lc.title || '') };
+    if (d.practice) info.practice = d.practice;
+    if (d.module === 0 || d.module === 1) info.module = d.module;
+    if (Array.isArray(d.secs)) info.secs = d.secs;
+    const rec = Object.assign(info, { id, name: String(row[1]).trim(), finishedAt: time_(row[0]), used: Array.isArray(d.used) ? d.used : [], limit: Number(d.limit) || 0 });
+    if (!recOpen_(info, open)) return { result: Object.assign(rec, { hidden: true, score: null, total: Number(row[4]) || 0, parts: {}, rows: [] }), showAnswers: false, content: null };
+    let rows = Array.isArray(d.rows) ? d.rows : [], content = null, cut = 0;
+    if (info.practice) {
+      const before = rows.length;
+      rows = rows.filter(x => !open.rc || open.rc.has(Number(x.t)));
+      cut = before - rows.length;
+      // 고른 회차가 지금 모두 닫혔으면 닫힌 회차 기록처럼 숨긴다
+      if (!rows.length) return { result: Object.assign(rec, { hidden: true, score: null, total: Number(row[4]) || 0, parts: {}, rows: [] }), showAnswers: false, content: null };
+      if (cut) rec.orig = { score: Number(row[3]) || 0, total: Number(row[4]) || 0 };
+      const tests = testsById_(rows.map(x => x.t)), sets = [], has = new Set(rows.map(x => x.k));
+      Object.keys(tests).map(Number).sort((a, b) => a - b).forEach(tid => tests[tid].modules.forEach((m, mi) => m.sets.forEach(s => {
+        if (s.type === 'words' && blanks_(s).some(b => has.has(tid + '-' + mi + '-' + b.n))) sets.push({ t: tid, mi, start: s.start, text: wordsText_(s) });
+      })));
+      content = sets.length ? { sets } : null;
+    } else if (info.lc) {
+      const t = loadLc_(info.lc.id);
+      content = t ? { test: stripLc_(t) } : null;
+    } else if (info.testId != null) {
+      const t = testsById_([info.testId])[info.testId];
+      content = t ? { test: stripAnswers_(t) } : null;
+    }
+    if (!open.showAnswers) rows = rows.map(x => ({ k: x.k, t: x.t, mi: x.mi, n: x.n, kind: x.kind, type: x.type, given: x.given, ok: x.ok }));
+    const score = rows.filter(x => x.ok).length;
+    return { result: Object.assign(rec, { score, total: rows.length, parts: partsOf_(rows, !!info.practice), rows, cut }), showAnswers: open.showAnswers, content };
   },
 
   // ---------- 관리자 ----------
@@ -207,7 +271,9 @@ const API = {
         module: detail && (detail.module === 0 || detail.module === 1) ? detail.module : (/ M1$/.test(String(row[2])) ? 0 : / M2$/.test(String(row[2])) ? 1 : null),
         limit: detail && Number(detail.limit) || 0,
         score: Number(row[3]) || 0, total: Number(row[4]) || 0,
-        parts: lc ? detail.parts || {} : { '0w': row[5], '0r': row[6], '1w': row[7], '1r': row[8] }, usedText: String(row[9]),
+        // 모듈별 점수 칸("3/10")은 예전에 날짜로 바뀌어 저장된 것이 있어서, 상세 칸이 있으면 거기서 다시 센다
+        parts: lc ? detail.parts || {} : !practice && detail && Array.isArray(detail.rows) ? partText_(partsOf_(detail.rows, false))
+          : { '0w': row[5], '0r': row[6], '1w': row[7], '1r': row[8] }, usedText: String(row[9]),
         wrong: String(row[10]), rows: detail && detail.rows || null, used: detail && detail.used || null
       });
     }
@@ -248,8 +314,15 @@ function checkCode_(code) {
   if (String(code || '').trim() !== real) throw new Error('입장 코드가 맞지 않아요.');
 }
 // "1-5, 8" 같은 문자열을 회차 번호 집합으로 바꾼다. 비어 있으면 전부 열림.
-function openSet_(key) {
-  const s = setting_(key || '열린회차'); if (!s) return null;
+function openSet_(key) { return parseOpen_(setting_(key || '열린회차')); }
+// 지금 열린 회차들과 정답 공개 (설정 시트를 한 번만 읽는다). rc가 null이면 리딩은 전부 열림, lcNew·lcTpo가 null이면 그 세트는 전부 닫힘
+function openNow_() {
+  const rows = sheet_(SH.settings).getDataRange().getValues();
+  const get = key => { for (const row of rows) if (String(row[0]) === key) return String(row[1] == null ? '' : row[1]).replace(/^'/, '').trim(); return ''; };
+  return { rc: parseOpen_(get('열린회차')), lcNew: parseOpen_(get('리스닝새열린회차')), lcTpo: parseOpen_(get('리스닝TPO열린회차')), showAnswers: get('정답공개') !== 'N' };
+}
+function parseOpen_(s) {
+  if (!s) return null;
   const set = new Set();
   s.split(/[,\s]+/).filter(Boolean).forEach(p => {
     const m = p.match(/^(\d+)\s*[-~]\s*(\d+)$/);
@@ -282,6 +355,12 @@ function loadTest_(id) {
   for (let i = 1; i < rows.length; i++) if (String(rows[i][0]) === String(id)) return JSON.parse(rows[i][3]);
   return null;
 }
+// 여러 회차를 시트 한 번 읽어서 { 회차: 문제 } 로 (없는 회차는 빠진다)
+function testsById_(ids) {
+  const want = new Set(ids.map(String)), rows = sheet_(SH.tests).getDataRange().getValues(), out = {};
+  for (let i = 1; i < rows.length; i++) if (want.has(String(rows[i][0]))) { try { out[rows[i][0]] = JSON.parse(rows[i][3]); } catch (e) {} }
+  return out;
+}
 function validateTest_(t) {
   if (!t || !t.id || !Array.isArray(t.modules) || !t.modules.length) throw new Error('회차 형식이 잘못됐어요 (id, modules 필요).');
   t.modules.forEach(m => (m.sets || []).forEach(s => {
@@ -311,11 +390,13 @@ function testSummary_(t) {
 // 학생에게 보낼 버전: 빈칸은 글자 수만, 객관식은 정답 제거
 function stripAnswers_(t) {
   return { id: t.id, modules: t.modules.map(m => ({ name: m.name, minutes: m.minutes, sets: m.sets.map(s => {
-    if (s.type === 'words') return { type: 'words', start: s.start, text: String(s.text).replace(/\[([a-z]+)\]/g, (a, w) => '[' + w.length + ']') };
+    if (s.type === 'words') return { type: 'words', start: s.start, text: wordsText_(s) };
     return { type: 'read', kind: s.kind, title: s.title, passage: s.passage,
       questions: s.questions.map(q => ({ n: q.n, q: q.q, c: q.c, insert: q.insert })) };
   }) })) };
 }
+// 빈칸 지문의 학생용 글: 빠진 글자는 글자 수만 남긴다 ("popul[ation]" → "popul[5]")
+function wordsText_(s) { return String(s.text).replace(/\[([a-z]+)\]/g, (a, w) => '[' + w.length + ']'); }
 
 // ---------- 리스닝 문제 ----------
 // 시험 하나: { id: "new-1" | "tpo-7", set, no, title, packs: [m1 bytes, m2 bytes],
@@ -469,7 +550,8 @@ function saveResult_(rec, attempt, open) {
 // 결과 시트에 한 줄 쓴다. 부르는 쪽(saveResult_)이 잠근 상태에서 부른다.
 function appendResult_(rec) {
   {
-    const part = k => rec.parts[k] ? rec.parts[k][0] + '/' + rec.parts[k][1] : '';
+    // 앞에 '를 붙여 글자로 넣는다 (그냥 "3/10"이면 시트가 3월 10일 날짜로 바꾼다)
+    const part = k => rec.parts[k] ? "'" + rec.parts[k][0] + '/' + rec.parts[k][1] : '';
     const fmt = s => { s = Math.max(0, Math.round(s || 0)); return Math.floor(s / 60) + '분 ' + (s % 60) + '초'; };
     const lim = rec.limit > 0 ? ' (제한 ' + rec.limit + '분)' : ' (제한 없음)';
     // 빈칸 모음: "빈칸 5분 2초 (제한 없음)" / 모듈 하나: "M1 12분 3초 (제한 18분)" / 전체: "12분 3초 + 8분 0초"
@@ -495,6 +577,53 @@ function appendResult_(rec) {
     ]);
   }
 }
+// 유형별 [맞은 수, 문항 수]: 리딩 '0w' '0r' '1w' '1r', 빈칸 모음 'w', 리스닝 'resp' 'conv' 'ann' 'talk'
+function partsOf_(rows, practice) {
+  const key = { response: 'resp', conversation: 'conv', announcement: 'ann', talk: 'talk' }, parts = {};
+  rows.forEach(x => { const k = x.kind === 'l' ? key[x.type] : practice ? 'w' : x.mi + x.kind; if (!k) return;
+    const p = parts[k] || (parts[k] = [0, 0]); p[1]++; if (x.ok) p[0]++; });
+  return parts;
+}
+function partText_(parts) { const out = {}; Object.keys(parts).forEach(k => { out[k] = parts[k][0] + '/' + parts[k][1]; }); return out; }
+
+// ---------- 내 기록 ----------
+// 반·이름은 앞뒤·겹친 빈칸과 대소문자를 따지지 않고 비교한다 (이름은 저장할 때처럼 60자까지만)
+function norm_(s) { return String(s == null ? '' : s).trim().replace(/\s+/g, ' ').toLowerCase(); }
+function who_(r) {
+  const name = norm_(clip_(r.name, 60)), cls = norm_(clip_(r.cls, 60));
+  if (!name || !cls) throw new Error('반과 이름을 먼저 입력해 주세요.');
+  return { name, cls };
+}
+function mine_(who, name, cls) { const c = norm_(cls); return norm_(name) === who.name && (c === who.cls || !c); }
+function time_(v) { return v instanceof Date ? v.getTime() : Number(v) || 0; }
+// 결과 시트의 회차 칸("TEST 5 M1", "빈칸 TEST 1-10", "리스닝 NEW TOEFL 3 TEST 1 M2 (Best Response · Conversation)")에서 기록 종류를 읽는다
+function labelInfo_(label) {
+  const s = String(label == null ? '' : label).trim(), out = { testId: null, module: null, practice: null, lc: null, secs: null };
+  let m;
+  if ((m = s.match(/^빈칸 TEST (\d+)(?:-(\d+))?$/))) return Object.assign(out, { practice: { from: +m[1], to: +(m[2] || m[1]) } });
+  if ((m = s.match(/^TEST (\d+)(?: M([12]))?$/))) return Object.assign(out, { testId: +m[1], module: m[2] ? m[2] - 1 : null });
+  if ((m = s.match(/^리스닝 (.+?) M([12])(?: \((.+)\))?$/))) {
+    // 이름을 NEW TOEFL 3으로 바꾸기 전에는 새 문제집 회차 제목이 "새 TEST 1"이었다
+    const title = m[1], names = [[LC_SET_NAME.new, 'new'], [LC_SET_NAME.tpo, 'tpo'], ['새', 'new']];
+    const hit = names.find(x => title.indexOf(x[0] + ' TEST ') === 0), set = hit && hit[1];
+    const no = hit ? title.slice((hit[0] + ' TEST ').length) : '';
+    const secs = m[3] ? m[3].split(' · ').map(x => Object.keys(LC_TYPE_NAME).find(k => LC_TYPE_NAME[k] === x)).filter(Boolean) : [];
+    return Object.assign(out, { module: m[2] - 1, lc: { id: /^\d+$/.test(no) ? set + '-' + Number(no) : null, title }, secs: secs.length ? secs : null });
+  }
+  return Object.assign(out, { label: s });
+}
+// 학생에게 점수·채점 결과를 보여도 되는 기록인가: 지금 열린 회차의 기록만.
+// 빈칸 모아 풀기는 낼 때 열린 회차만 채점하므로 점수는 보여 준다 (문항은 myResult가 지금 열린 회차 것만 보낸다).
+function recOpen_(info, open) {
+  if (info.practice) return true;
+  if (info.testId != null) return !open.rc || open.rc.has(Number(info.testId));
+  if (info.lc && /^(new|tpo)-\d+$/.test(info.lc.id || '')) {
+    const p = info.lc.id.split('-'), s = p[0] === 'new' ? open.lcNew : open.lcTpo;
+    return !!s && s.has(Number(p[1]));
+  }
+  return false;
+}
+
 // 시트를 읽고 쓰는 동안 다른 요청이 끼어들지 못하게 잠근다.
 function withLock_(fn) {
   const lock = LockService.getScriptLock();
