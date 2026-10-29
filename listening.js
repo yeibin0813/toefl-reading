@@ -55,7 +55,7 @@ async function startLc(id) {
 function viewLcList() {
   const tests = S.lcTests || [];
   if (!tests.length) return `<div class="banner">지금 열려 있는 리스닝 회차가 없어요. 선생님께 문의하세요.</div>`;
-  const best = id => { const xs = MINE.filter(a => a.lc && a.lc.id === id); return xs.length ? `최근 ${modName(xs[0].mod)}${esc(lcSecTag(xs[0]))} <span class="num">${scoreText(xs[0])}</span> · ${xs.length}회 응시` : '아직 안 풀었어요'; };
+  const all = mineList(), best = id => bestText(all && all.filter(a => a.lc && a.lc.id === id), a => modName(a.mod) + esc(lcSecTag(a)));
   const group = (set, title) => {
     const list = tests.filter(t => t.set === set); if (!list.length) return '';
     return `<section class="stack"><h2 style="font-size:18px">${title} <span class="note" style="font-weight:400">${list.length}회차</span></h2><section class="tests">${list.map(t => `<article class="tcard"><h3>${esc(t.title)}</h3>
@@ -71,12 +71,12 @@ function viewLcPick() {
     const sel = lcPicked(mi), all = lcTypesOf(m), n = lcCount(m, sel.length === all.length ? null : sel);
     const desc = tp => { const its = m.items.filter(it => it.type === tp), q = its.reduce((k, it) => k + it.questions.length, 0);
       return tp === 'response' ? `${q}문제` : `${its.length}개 · ${q}문제`; };
-    const done = MINE.filter(a => a.lc && a.lc.id === t.id && a.mod === mi);
+    const recs = mineList(), done = recs && recs.filter(a => a.lc && a.lc.id === t.id && a.mod === mi);
     return `<article class="tcard"><h3>${esc(m.name)}</h3>
       <fieldset class="lcsecs"><legend>풀 섹션 <span class="note">원하는 섹션만 골라 풀 수 있어요</span></legend>
         ${all.map(tp => `<label class="check"><input type="checkbox" data-lcsec="${mi}" value="${tp}"${sel.includes(tp) ? ' checked' : ''}>${LC_TYPE[tp]} <span class="note">${desc(tp)}</span></label>`).join('')}</fieldset>
       <dl><dt>음원</dt><dd>약 ${lcMB((t.packs || [])[mi] || 0)}MB (시작 전에 받아요)</dd></dl>
-      <div class="best">${done.length ? `최근${esc(lcSecTag(done[0]))} <span class="num">${scoreText(done[0])}</span> · ${done.length}회 응시` : '아직 안 풀었어요'}</div>
+      <div class="best">${bestText(done, a => esc(lcSecTag(a)).trim())}</div>
       ${sel.length ? `<button class="btn primary" data-act="lcModule" data-mi="${mi}">${esc(m.name)} 시작 · ${n}문제</button>`
         : `<button class="btn primary" disabled>섹션을 하나 이상 고르세요</button>`}</article>`;
   }).join('');
@@ -163,12 +163,18 @@ function lcAudio() {
   au.addEventListener('timeupdate', () => { if (mine() && !au.seeking) LC.maxT = Math.max(LC.maxT, au.currentTime); });
   // 앞뒤로 옮기지 못하게, 들은 데까지로 되돌린다
   au.addEventListener('seeking', () => { if (mine() && Math.abs(au.currentTime - LC.maxT) > 1) au.currentTime = LC.maxT; });
-  if ('mediaSession' in navigator) {
-    const ms = navigator.mediaSession, none = () => {};
-    ['seekto', 'seekbackward', 'seekforward', 'previoustrack', 'nexttrack', 'pause', 'stop'].forEach(a => { try { ms.setActionHandler(a, none); } catch (e) {} });
-    try { ms.setActionHandler('play', () => { if (mine()) au.play().catch(() => {}); }); } catch (e) {}
-  }
   return au;
+}
+// 시험 중에는 잠금 화면·이어폰 버튼으로 음원을 멈추거나 옮기지 못하게 한다. 다시 보기에서는 풀어 준다.
+const LC_MEDIA = ['seekto', 'seekbackward', 'seekforward', 'previoustrack', 'nexttrack', 'pause', 'stop', 'play'];
+function lcMediaLock() {
+  if (!('mediaSession' in navigator)) return;
+  const ms = navigator.mediaSession, au = LC.au, none = () => {};
+  LC_MEDIA.forEach(a => { try { ms.setActionHandler(a, a === 'play' ? () => { if (au && LC.cur && au.src === LC.cur) au.play().catch(() => {}); } : none); } catch (e) {} });
+}
+function lcMediaFree() {
+  if (!('mediaSession' in navigator)) return;
+  LC_MEDIA.forEach(a => { try { navigator.mediaSession.setActionHandler(a, null); } catch (e) {} });
 }
 // 끝난 음원은 재생기에서 빼 둔다 (남아 있으면 잠금 화면에서 다시 틀 수 있다)
 function lcUnload() {
@@ -190,7 +196,7 @@ function lcUnlock() { const au = lcAudio(); au.muted = false; au.src = lcSilent(
 /* ---------- 진행 ---------- */
 function lcBegin() {
   const e = S.exam; if (!LC.clips) return;
-  lcAudio(); LC.ask = '';
+  lcAudio(); lcMediaLock(); LC.ask = '';
   e.resumed = false;
   if (e.step < 0) { e.startedAt = Date.now(); e.step = 0; lcEnter(); return; }  // 이 클릭 안에서 첫 음원이 바로 재생된다
   // 새로고침 뒤 이어서: 듣던 음원은 다시 틀지 않고 문제로 넘어가고, 보던 문제는 남아 있던 시간만 준다
@@ -327,6 +333,54 @@ function lcResumeExits(e) {
     <div class="toolbar"><button class="btn small" data-act="lcAsk" data-ask="submit">지금까지 고른 답으로 제출</button><button class="btn small" data-act="lcAsk" data-ask="quit">그만두기</button></div></div>`;
 }
 
+/* ---------- 다시 보기 ---------- */
+// 다시 볼 때 쓰는 음원 (시험용 LC와 따로 둔다). '음원 받기'를 누르면 그 모듈 묶음을 받고, 문항 묶음마다 마음대로 다시 들을 수 있다.
+// tok: 받기마다 새로 만든다. 늦게 끝난 예전 받기가 지금 것을 덮지 않게 한다.
+const LCR = { key: '', clips: null, loading: false, err: '', tok: null };
+function rvRelease() {
+  if (LCR.clips) Object.values(LCR.clips).forEach(u => URL.revokeObjectURL(u));
+  Object.assign(LCR, { key: '', clips: null, loading: false, err: '', tok: null });
+}
+async function rvAudioLoad() {
+  const V = S.review; if (!V || !V.r || !V.r.lc) return;
+  const id = V.r.lc.id, mi = V.r.module, key = id + '_m' + mi;
+  if (LCR.key === key && (LCR.clips || LCR.loading)) return;
+  rvRelease(); lcMediaFree();
+  const tok = LCR.tok = {}; LCR.key = key; LCR.loading = true; render();
+  try {
+    const j = await api('getAudio', { code: S.code.trim(), id, module: mi });
+    const clips = {};
+    Object.entries(j.pack.clips).forEach(([k, b64]) => { clips[k] = URL.createObjectURL(new Blob([b64bytes(b64)], { type: 'audio/mpeg' })); });
+    if (LCR.tok === tok) LCR.clips = clips; else Object.values(clips).forEach(u => URL.revokeObjectURL(u));
+  } catch (e) { if (LCR.tok === tok) LCR.err = e.message; }
+  if (LCR.tok !== tok) return;
+  LCR.loading = false;
+  if (S.screen === 'review') render();
+}
+// 리스닝 다시 보기: 문항 묶음마다 음원(받았으면)과 문제
+function lcReviewBody(V) {
+  const r = V.r, t = V.content.test, m = t.modules[r.module], by = rowMap(r.rows);
+  if (!m) return '';
+  const key = r.lc.id + '_m' + r.module, mine = LCR.key === key, mb = lcMB((t.packs || [])[r.module] || 0);
+  const bar = mine && LCR.clips ? '' : mine && LCR.loading ? `<div class="banner">음원을 받는 중이에요… (약 ${mb}MB)</div>`
+    : `<div class="toolbar"><button class="btn" data-act="rvAudio">음원 받기 · 약 ${mb}MB</button><span class="note">받으면 문항 묶음마다 다시 들을 수 있어요.</span></div>
+       ${mine && LCR.err ? `<div class="banner bad">${esc(LCR.err)}</div>` : ''}`;
+  const items = m.items.map(it => {
+    it.questions.forEach(q => { const x = by[r.module + '-' + q.n]; if (x) V.seen.add(x.k); });
+    const qs = it.questions.filter(q => { const x = by[r.module + '-' + q.n]; return x && (!V.onlyWrong || !x.ok); });
+    if (!qs.length) return '';
+    const url = mine && LCR.clips && LCR.clips[it.clip];
+    return `<section class="stack rvitem"><div class="qhead" style="margin:0"><h3>${esc(it.heading)}</h3><span class="note num">${LC_TYPE[it.type] || ''} · ${it.from === it.to ? `Question ${it.from}` : `Questions ${it.from}–${it.to}`}</span></div>
+      ${url ? `<audio controls preload="metadata" src="${url}" aria-label="${esc(it.heading)} 음원"></audio>` : ''}
+      ${qs.map(q => rvChoice(q.n, q.q || '가장 알맞은 응답을 고르세요.', q.c, by[r.module + '-' + q.n])).join('')}</section>`;
+  }).join('');
+  return items ? bar + items : '';
+}
+// 다시 보기에서 음원 하나를 틀면 다른 음원은 멈춘다
+document.addEventListener('play', ev => {
+  if (ev.target.closest && ev.target.closest('.rvitem')) document.querySelectorAll('.rvitem audio').forEach(a => { if (a !== ev.target) a.pause(); });
+}, true);
+
 /* ---------- 이벤트 ---------- */
 document.addEventListener('click', ev => {
   const b = ev.target.closest('[data-act]'); if (!b) return;
@@ -342,6 +396,7 @@ document.addEventListener('click', ev => {
   else if (act === 'lcPlay' && LC.au && LC.cur) { const url = LC.cur; LC.au.play().then(() => { LC.blocked = false; render(); }).catch(x => lcPlayFailed(x, url)); }
   else if (act === 'lcPickAgain') { S.screen = 'lcpick'; S.result = null; S.err = ''; render(); window.scrollTo(0, 0); }
   else if (act === 'tab') { S.tab = b.dataset.tab; lsSet(':tab', S.tab); S.err = ''; render(); }
+  else if (act === 'rvAudio') rvAudioLoad();
 });
 document.addEventListener('change', ev => {
   const el = ev.target;
