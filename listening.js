@@ -5,11 +5,15 @@
 // index.html보다 먼저 불러온다. 여기 함수들은 그 페이지의 S, esc, render 등을 부를 때 쓴다.
 //
 // S.lcPick: { test(정답 없음), showAnswers } — 리스닝 회차를 고른 뒤 모듈을 고르는 화면
-// S.exam (리스닝): { kind: 'lc', test, showAnswers, mod, answers, startedAt, step, phase, qEndsAt, used }
+// S.lcSecs: { id: 회차, [모듈 번호]: [고른 섹션 유형들] } — 모듈 카드에서 고른 섹션 (없거나 다른 회차 것이면 전부)
+// S.exam (리스닝): { kind: 'lc', test, showAnswers, mod, secs, answers, startedAt, step, phase, qEndsAt, used }
+//   secs: 고른 섹션 유형들 (예: ['talk']). null이면 모듈 전체
 //   step: 지금 화면 번호 (lcSteps 순서, -1이면 안내·음원 준비), phase: 'audio'(듣는 중) | 'answer'(답 고르는 중)
 
-const LC_TYPE = { response: '응답 고르기', conversation: '대화', announcement: '공지', talk: '강의' };
-const LC_PART = { resp: '응답 고르기', conv: '대화', ann: '공지', talk: '강의' };
+const LC_TYPE = { response: 'Best Response', conversation: 'Conversation', announcement: 'Announcement', talk: 'Academic Talk' };
+const LC_PART = { resp: 'Best Response', conv: 'Conversation', ann: 'Announcement', talk: 'Academic Talk' };
+const LC_ORDER = ['response', 'conversation', 'announcement', 'talk'];
+const lcSecNames = secs => (secs && secs.length ? secs.map(s => LC_TYPE[s] || s).join(' · ') : '');
 // 받은 음원(모듈 하나)과 재생기. 음원은 저장하지 않으므로 새로고침하면 다시 받는다.
 // cur: 지금 들을 차례인 음원 주소(듣는 중일 때만), maxT: 그 음원을 어디까지 들었는지, ask: 'quit' | 'submit' (한 번 더 묻는 중)
 const LC = { key: '', clips: null, loading: false, got: 0, need: 0, err: '', au: null, blocked: false, vol: 1, cur: null, maxT: 0, silent: null, ask: '' };
@@ -17,16 +21,26 @@ try { const v = parseFloat(localStorage.getItem('toefl-rq2:vol')); if (v >= 0 &&
 // 아이폰·아이패드는 웹에서 소리 크기를 바꿀 수 없다(항상 1). 그런 기기에서는 소리 크기 막대를 숨긴다.
 const LC_VOL_OK = (() => { try { const a = document.createElement('audio'); a.volume = 0.5; return Math.abs(a.volume - 0.5) < 0.01; } catch (e) { return false; } })();
 
-// 한 모듈의 화면 순서: 응답 고르기는 문장 하나당 한 화면(듣기 → 답), 대화·공지·강의는 듣기 화면 하나 + 문제마다 한 화면
-function lcSteps(m) {
-  const out = [];
+// 한 모듈의 화면 순서: Best Response는 문장 하나당 한 화면(듣기 → 답), 나머지는 듣기 화면 하나 + 문제마다 한 화면
+// secs가 있으면 그 섹션 문항만 낸다. pos는 이번에 푸는 문항 안에서 몇 번째인지 (from·to는 듣기 화면이 덮는 범위)
+const lcHas = (secs, it) => !secs || !secs.length || secs.includes(it.type);
+function lcSteps(m, secs) {
+  const out = []; let pos = 0;
   m.items.forEach((it, i) => {
-    if (it.type === 'response') out.push({ t: 'resp', i, q: it.questions[0] });
-    else { out.push({ t: 'listen', i }); it.questions.forEach(q => out.push({ t: 'q', i, q })); }
+    if (!lcHas(secs, it)) return;
+    if (it.type === 'response') out.push({ t: 'resp', i, q: it.questions[0], pos: ++pos });
+    else { out.push({ t: 'listen', i, from: pos + 1, to: pos + it.questions.length }); it.questions.forEach(q => out.push({ t: 'q', i, q, pos: ++pos })); }
   });
   return out;
 }
-const lcCount = m => m.items.reduce((n, it) => n + it.questions.length, 0);
+const lcCount = (m, secs) => m.items.filter(it => lcHas(secs, it)).reduce((n, it) => n + it.questions.length, 0);
+const lcStepsOf = e => lcSteps(e.test.modules[e.mod], e.secs);
+// 모듈에 있는 섹션 유형 (시험 순서대로)
+const lcTypesOf = m => LC_ORDER.filter(tp => m.items.some(it => it.type === tp));
+const lcPicked = mi => { const m = S.lcPick.test.modules[mi], all = lcTypesOf(m), mine = S.lcSecs && S.lcSecs.id === S.lcPick.test.id, sel = mine && S.lcSecs[mi];
+  return sel ? all.filter(tp => sel.includes(tp)) : all; };
+// 최근 기록 옆에 붙이는 섹션 표시 (섹션만 골라 푼 기록이면)
+const lcSecTag = a => (a && a.secs && a.secs.length ? ` (${lcSecNames(a.secs)})` : '');
 const lcMB = n => (n / 1048576).toFixed(1);
 
 /* ---------- 회차·모듈 고르기 ---------- */
@@ -34,14 +48,14 @@ async function startLc(id) {
   S.busy = 'lc' + id; S.err = ''; render();
   try {
     const j = await api('getListening', { code: S.code.trim(), id });
-    S.lcPick = { test: j.test, showAnswers: j.showAnswers };
+    S.lcPick = { test: j.test, showAnswers: j.showAnswers }; S.lcSecs = { id: j.test.id };
     S.screen = 'lcpick'; S.busy = ''; render(); window.scrollTo(0, 0);
   } catch (e) { S.err = e.message; S.busy = ''; render(); }
 }
 function viewLcList() {
   const tests = S.lcTests || [];
   if (!tests.length) return `<div class="banner">지금 열려 있는 리스닝 회차가 없어요. 선생님께 문의하세요.</div>`;
-  const best = id => { const xs = MINE.filter(a => a.lc && a.lc.id === id); return xs.length ? `최근 ${modName(xs[0].mod)} <span class="num">${scoreText(xs[0])}</span> · ${xs.length}회 응시` : '아직 안 풀었어요'; };
+  const best = id => { const xs = MINE.filter(a => a.lc && a.lc.id === id); return xs.length ? `최근 ${modName(xs[0].mod)}${esc(lcSecTag(xs[0]))} <span class="num">${scoreText(xs[0])}</span> · ${xs.length}회 응시` : '아직 안 풀었어요'; };
   const group = (set, title) => {
     const list = tests.filter(t => t.set === set); if (!list.length) return '';
     return `<section class="stack"><h2 style="font-size:18px">${title} <span class="note" style="font-weight:400">${list.length}회차</span></h2><section class="tests">${list.map(t => `<article class="tcard"><h3>${esc(t.title)}</h3>
@@ -54,23 +68,29 @@ function viewLcList() {
 function viewLcPick() {
   const t = S.lcPick.test;
   const cards = t.modules.map((m, mi) => {
-    const n = {}; m.items.forEach(it => { n[it.type] = (n[it.type] || 0) + 1; });
-    const parts = [n.response ? `응답 고르기 ${n.response}문제` : '', n.conversation ? `대화 ${n.conversation}개` : '', n.announcement ? `공지 ${n.announcement}개` : '', n.talk ? `강의 ${n.talk}개` : ''].filter(Boolean).join(' · ');
+    const sel = lcPicked(mi), all = lcTypesOf(m), n = lcCount(m, sel.length === all.length ? null : sel);
+    const desc = tp => { const its = m.items.filter(it => it.type === tp), q = its.reduce((k, it) => k + it.questions.length, 0);
+      return tp === 'response' ? `${q}문제` : `${its.length}개 · ${q}문제`; };
     const done = MINE.filter(a => a.lc && a.lc.id === t.id && a.mod === mi);
     return `<article class="tcard"><h3>${esc(m.name)}</h3>
-      <dl><dt>문제</dt><dd>${lcCount(m)}문제</dd><dt>구성</dt><dd>${parts}</dd><dt>음원</dt><dd>약 ${lcMB((t.packs || [])[mi] || 0)}MB (시작 전에 받아요)</dd></dl>
-      <div class="best">${done.length ? `최근 <span class="num">${scoreText(done[0])}</span> · ${done.length}회 응시` : '아직 안 풀었어요'}</div>
-      <button class="btn primary" data-act="lcModule" data-mi="${mi}">${esc(m.name)} 시작</button></article>`;
+      <fieldset class="lcsecs"><legend>풀 섹션 <span class="note">원하는 섹션만 골라 풀 수 있어요</span></legend>
+        ${all.map(tp => `<label class="check"><input type="checkbox" data-lcsec="${mi}" value="${tp}"${sel.includes(tp) ? ' checked' : ''}>${LC_TYPE[tp]} <span class="note">${desc(tp)}</span></label>`).join('')}</fieldset>
+      <dl><dt>음원</dt><dd>약 ${lcMB((t.packs || [])[mi] || 0)}MB (시작 전에 받아요)</dd></dl>
+      <div class="best">${done.length ? `최근${esc(lcSecTag(done[0]))} <span class="num">${scoreText(done[0])}</span> · ${done.length}회 응시` : '아직 안 풀었어요'}</div>
+      ${sel.length ? `<button class="btn primary" data-act="lcModule" data-mi="${mi}">${esc(m.name)} 시작 · ${n}문제</button>`
+        : `<button class="btn primary" disabled>섹션을 하나 이상 고르세요</button>`}</article>`;
   }).join('');
   return `<div class="home">
     <div class="qhead" style="margin:0"><h2 style="font-size:24px">리스닝 ${esc(t.title)}</h2><button class="btn small" data-act="home">회차 목록</button></div>
-    <ul class="note lcrules"><li>음원은 <b>한 번만</b> 나오고 다시 들을 수 없어요.</li><li>문제는 한 화면에 하나씩 나와요. 응답 고르기·대화·공지는 문제마다 <b>20초</b>, 강의는 <b>30초</b>예요.</li>
+    <ul class="note lcrules"><li>음원은 <b>한 번만</b> 나오고 다시 들을 수 없어요.</li><li>문제는 한 화면에 하나씩 나와요. Best Response·Conversation·Announcement는 문제마다 <b>20초</b>, Academic Talk는 <b>30초</b>예요.</li>
       <li>답을 골라야 Next로 넘어갈 수 있고, 시간이 다 되면 저절로 넘어가요. <b>이전 문제로 돌아갈 수 없어요.</b></li><li>소리가 잘 들리는지 확인하고, 이어폰을 쓰면 좋아요.</li></ul>
     <section class="tests">${cards}</section></div>`;
 }
 function startLcModule(mi) {
-  const t = S.lcPick.test;
-  S.exam = { kind: 'lc', test: t, showAnswers: S.lcPick.showAnswers, mod: mi, answers: {}, startedAt: null, step: -1, phase: null, qEndsAt: null, used: [] };
+  const t = S.lcPick.test, sel = lcPicked(mi), all = lcTypesOf(t.modules[mi]);
+  if (!sel.length) return;
+  const secs = sel.length === all.length ? null : sel;  // 전부 고르면 모듈 전체
+  S.exam = { kind: 'lc', test: t, showAnswers: S.lcPick.showAnswers, mod: mi, secs, answers: {}, startedAt: null, step: -1, phase: null, qEndsAt: null, used: [] };
   LC.ask = ''; persist(); S.screen = 'exam'; render(); window.scrollTo(0, 0);
   lcLoad();
 }
@@ -175,7 +195,7 @@ function lcBegin() {
   if (e.step < 0) { e.startedAt = Date.now(); e.step = 0; lcEnter(); return; }  // 이 클릭 안에서 첫 음원이 바로 재생된다
   // 새로고침 뒤 이어서: 듣던 음원은 다시 틀지 않고 문제로 넘어가고, 보던 문제는 남아 있던 시간만 준다
   lcUnlock();
-  const st = lcSteps(e.test.modules[e.mod])[e.step], left = e.qLeft;
+  const st = lcStepsOf(e)[e.step], left = e.qLeft;
   delete e.qLeft;
   if (!st) { lcFinish(); return; }
   if (e.phase === 'audio' && st.t === 'listen') { e.step++; lcEnter(); return; }
@@ -183,10 +203,10 @@ function lcBegin() {
     if (left < 500) { e.step++; lcEnter(); return; }  // 그 문제는 시간이 이미 다 됐었다
     lcAnswerPhase(st, left); return;
   }
-  lcAnswerPhase(st);  // 응답 고르기 음원을 듣다 끊긴 경우: 그 문제 시간은 처음부터
+  lcAnswerPhase(st);  // Best Response 음원을 듣다 끊긴 경우: 그 문제 시간은 처음부터
 }
 function lcEnter() {
-  const e = S.exam, steps = lcSteps(e.test.modules[e.mod]), st = steps[e.step];
+  const e = S.exam, steps = lcStepsOf(e), st = steps[e.step];
   if (!st) { lcFinish(); return; }
   const it = e.test.modules[e.mod].items[st.i];
   if (st.t === 'q') { lcAnswerPhase(st); return; }
@@ -215,7 +235,7 @@ function lcPlayFailed(x, url) {
 function lcClipDone() { LC.cur = null; LC.blocked = false; lcUnload(); lcAudioEnded(); }
 function lcAudioEnded() {
   const e = S.exam; if (!e || e.kind !== 'lc' || e.phase !== 'audio') return;
-  const st = lcSteps(e.test.modules[e.mod])[e.step];
+  const st = lcStepsOf(e)[e.step];
   if (st.t === 'resp') lcAnswerPhase(st);
   else { e.step++; lcEnter(); }
 }
@@ -250,11 +270,14 @@ function lcTopBar() {
   const waiting = e.step < 0 || e.resumed || !LC.clips;  // 안내·음원 준비·이어서 풀기 화면에서는 시간이 가지 않는다
   const timer = !waiting && e.phase === 'answer' && e.qEndsAt ? `<span class="timer num" id="timer" aria-label="남은 시간">${fmtTime(Math.ceil((e.qEndsAt - Date.now()) / 1000))}</span>`
     : `<span class="timer num up" id="timer">${!waiting && e.phase === 'audio' ? '듣는 중' : '--:--'}</span>`;
-  return `<span class="chip">리스닝 ${esc(e.test.title)}</span><span class="chip">${m.name}</span><span class="spacer"></span>
+  return `<span class="chip">리스닝 ${esc(e.test.title)}</span><span class="chip">${m.name}${e.secs ? ' · ' + esc(lcSecNames(e.secs)) : ''}</span><span class="spacer"></span>
     ${LC_VOL_OK ? `<label class="vol" title="소리 크기">🔊<input type="range" id="lcvol" min="0" max="1" step="0.05" value="${LC.vol}" aria-label="소리 크기"></label>` : ''}${timer}`;
 }
 function viewLcExam() {
-  const e = S.exam, m = e.test.modules[e.mod], steps = lcSteps(m), total = lcCount(m);
+  const e = S.exam, m = e.test.modules[e.mod], steps = lcStepsOf(e), total = lcCount(m, e.secs);
+  const part = e.secs ? ` (${esc(lcSecNames(e.secs))})` : '';
+  // 섹션만 골라 풀 때는 원래 문항 번호와 함께 이번에 푸는 문항 중 몇 번째인지 보여 준다
+  const where = (n, pos) => (e.secs ? `Question ${n} · ${pos}/${total}` : `Question ${n} of ${total}`);
   // 안내 화면 (처음) 또는 새로고침 뒤 음원을 다시 받는 화면
   if (e.step < 0 || !LC.clips || e.resumed) {
     // 새로고침으로 멈춘 순간 그 문제에 남아 있던 시간을 적어 둔다 (이어서 풀 때 그만큼만 준다)
@@ -266,9 +289,9 @@ function viewLcExam() {
          <div class="note num" id="lctxt">${LC.clips ? '음원 준비 완료' : `음원 준비 중 ${pct}% (${lcMB(LC.got)} / ${lcMB(LC.need)}MB)`}</div>`;
     return `<div class="sheet stack lcintro">
       <div class="eyebrow">Listening · ${m.name}</div>
-      <h2>${e.step < 0 ? `${esc(e.test.title)} ${m.name}` : '이어서 풀기'}</h2>
-      ${e.step < 0 ? `<p class="note" style="margin:0">${m.name}은 <b>${total}문제</b>예요. The clock will show you how much time you have to complete each question. You WILL NOT be able to return to previous questions.</p>
-      <ul class="note lcrules"><li>음원은 한 번만 나와요.</li><li>응답 고르기·대화·공지는 문제마다 20초, 강의는 30초예요.</li><li>답을 고르면 Next로 넘어가요. 시간이 다 되면 저절로 넘어가요.</li></ul>`
+      <h2>${e.step < 0 ? `${esc(e.test.title)} ${m.name}${part}` : '이어서 풀기'}</h2>
+      ${e.step < 0 ? `<p class="note" style="margin:0">${e.secs ? `${m.name}에서 고른 섹션 <b>${total}문제</b>를 풀어요.` : `${m.name}은 <b>${total}문제</b>예요.`} The clock will show you how much time you have to complete each question. You WILL NOT be able to return to previous questions.</p>
+      <ul class="note lcrules"><li>음원은 한 번만 나와요.</li><li>Best Response·Conversation·Announcement는 문제마다 20초, Academic Talk는 30초예요.</li><li>답을 고르면 Next로 넘어가요. 시간이 다 되면 저절로 넘어가요.</li></ul>`
         : `<p class="note" style="margin:0">페이지를 새로 열어서 음원을 다시 받아요. 듣던 음원은 다시 나오지 않고, 풀던 문제는 남아 있던 시간만큼 이어서 풀어요.</p>`}
       ${status}
       <div class="toolbar"><button class="btn primary" data-act="lcBegin"${LC.clips ? '' : ' disabled'}>${e.step < 0 ? '시작' : '이어서 풀기'}</button>
@@ -284,13 +307,13 @@ function viewLcExam() {
       ${q.c.map((c, ci) => `<label class="opt"><input type="radio" name="lc${k}" data-lck="${k}" value="${LET[ci]}"${cur === LET[ci] ? ' checked' : ''}><b>(${LET[ci]})</b><span>${esc(c)}</span></label>`).join('')}</fieldset></div>
       <div class="navrow"><span class="note">답을 고르면 Next를 누를 수 있어요.</span><button class="btn primary" data-act="lcNext"${cur ? '' : ' disabled'}>Next</button></div>`; };
   if (st.t === 'resp') {
-    return `<div class="qhead"><h2>Choose the best response.</h2><span class="note num">Question ${st.q.n} of ${total}</span></div>
+    return `<div class="qhead"><h2>Choose the best response.</h2><span class="note num">${where(st.q.n, st.pos)}</span></div>
       ${e.phase === 'audio' ? listening : options(st.q)}`;
   }
   if (st.t === 'listen') {
-    return `<div class="qhead"><h2>${esc(it.heading)}</h2><span class="note num">Questions ${it.from}–${it.to} of ${total}</span></div>${listening}`;
+    return `<div class="qhead"><h2>${esc(it.heading)}</h2><span class="note num">Questions ${it.from}–${it.to}${e.secs ? ` · ${st.from}–${st.to}/${total}` : ` of ${total}`}</span></div>${listening}`;
   }
-  return `<div class="qhead"><h2>${esc(it.heading)}</h2><span class="note num">Question ${st.q.n} of ${total}</span></div>${options(st.q)}`;
+  return `<div class="qhead"><h2>${esc(it.heading)}</h2><span class="note num">${where(st.q.n, st.pos)}</span></div>${options(st.q)}`;
 }
 
 // 이어서 풀기 화면: 음원을 받을 수 없을 때도 빠져나갈 수 있게
@@ -322,6 +345,12 @@ document.addEventListener('click', ev => {
 });
 document.addEventListener('change', ev => {
   const el = ev.target;
+  if (el.type === 'checkbox' && el.dataset.lcsec != null && S.lcPick) {
+    const mi = +el.dataset.lcsec, all = lcTypesOf(S.lcPick.test.modules[mi]);
+    if (!S.lcSecs || S.lcSecs.id !== S.lcPick.test.id) S.lcSecs = { id: S.lcPick.test.id };
+    S.lcSecs[mi] = all.filter(tp => document.querySelector(`input[data-lcsec="${mi}"][value="${tp}"]`).checked);
+    render(); return;
+  }
   if (el.type === 'radio' && el.dataset.lck && S.exam && S.exam.kind === 'lc') {
     S.exam.answers[el.dataset.lck] = el.value; persist();
     const nx = document.querySelector('[data-act="lcNext"]'); if (nx) nx.disabled = false;

@@ -54,7 +54,7 @@ const modName = mi => (mi === 0 || mi === 1 ? `Module ${mi + 1}` : mi === 'w' ? 
 const span = p => (p.from === p.to ? `${p.from}` : `${p.from}–${p.to}`);
 // 닫힌 회차에 낸 답안은 점수를 돌려받지 않는다 (score가 null)
 const scoreText = a => (a.score == null ? '제출함' : `${a.score}/${a.total}`);
-const recLabel = a => (a.practice ? `빈칸 TEST ${span(a.practice)}` : a.lc ? `리스닝 ${a.lc.title} · ${modName(a.mod)}` : `TEST ${a.testId} · ${modName(a.mod)}`);
+const recLabel = a => (a.practice ? `빈칸 TEST ${span(a.practice)}` : a.lc ? `리스닝 ${a.lc.title} · ${modName(a.mod)}${a.secs ? ` (${lcSecNames(a.secs)})` : ''}` : `TEST ${a.testId} · ${modName(a.mod)}`);
 const rowLabel = x => (x.t != null ? `T${x.t} ` : '') + `M${x.mi + 1}-${x.n}`;
 
 function blanksOf(set) { const out = []; let i = 0; set.text.replace(BLANK, (a, len) => { out.push({ n: set.start + i++, len: +len }); return a; }); return out; }
@@ -141,7 +141,7 @@ async function finish() {
   const who = { name: S.name.trim(), period: S.period, cls: S.cls };
   const body = Object.assign(words
     ? { code: S.code.trim(), from: e.from, to: e.to, limit: e.limit, answers: e.answers, used: e.used, startedAt: e.startedAt }
-    : { code: S.code.trim(), id: e.test.id, module: e.mod, limit: e.limit, answers: e.answers, used: e.used, startedAt: e.startedAt }, who, { attempt: e.attempt });
+    : { code: S.code.trim(), id: e.test.id, module: e.mod, limit: e.limit, answers: e.answers, used: e.used, startedAt: e.startedAt }, who, { attempt: e.attempt }, lc && e.secs ? { secs: e.secs } : {});
   let j = null, err = '';
   for (let i = 0; i < 3 && !j; i++) {
     try { j = await api(words ? 'submitWords' : lc ? 'submitListening' : 'submit', body); } catch (x) { err = x.message; await new Promise(r => setTimeout(r, 1500)); }
@@ -152,7 +152,7 @@ async function finish() {
     S.pick = words || lc ? null : { test: e.test, showAnswers: e.showAnswers };
     S.lcPick = lc ? { test: e.test, showAnswers: e.showAnswers } : null;
     const r = j.result;
-    MINE.unshift({ testId: r.testId, mod: words ? 'w' : e.mod, practice: r.practice || null, lc: r.lc || null, score: r.score, total: r.total, parts: r.parts, finishedAt: r.finishedAt }); lsSet(':mine', MINE.slice(0, 100));
+    MINE.unshift({ testId: r.testId, mod: words ? 'w' : e.mod, practice: r.practice || null, lc: r.lc || null, secs: r.secs || null, score: r.score, total: r.total, parts: r.parts, finishedAt: r.finishedAt }); lsSet(':mine', MINE.slice(0, 100));
     S.result = { r, showAnswers: j.showAnswers, status: 'ok', onlyWrong: true };
   } else {
     S.result = { pending: e, status: 'fail', err };
@@ -334,7 +334,7 @@ function viewResult() {
     ${R.ask ? `<div class="banner bad">이 답안을 버릴까요? 선생님께 가지 않아요.<div class="toolbar" style="margin-top:8px"><button class="btn" data-act="discard">버리기</button><button class="btn" data-act="cancelDiscard">취소</button></div></div>` : ''}</div>`;
   const r = R.r;
   const limitText = r.lc ? '' : r.limit > 0 ? ` (제한 ${fmtMin(r.limit)})` : ' (제한 없음)';
-  const title = r.practice ? `빈칸 TEST ${span(r.practice)}` : r.lc ? `리스닝 ${esc(r.lc.title)} · ${modName(r.module)}` : `TEST ${r.testId} · ${modName(r.module)}`;
+  const title = r.practice ? `빈칸 TEST ${span(r.practice)}` : r.lc ? `리스닝 ${esc(r.lc.title)} · ${modName(r.module)}${r.secs ? ` (${esc(lcSecNames(r.secs))})` : ''}` : `TEST ${r.testId} · ${modName(r.module)}`;
   return `<div class="stack">
     <div class="qhead"><h2>${title} 결과 · ${esc(r.name)}</h2><span class="note num">소요 ${fmtTime(r.used[0] || 0)}${limitText}</span></div>
     ${r.hidden ? `<div class="banner ok">답안이 선생님께 전달됐어요. 이 회차는 지금 닫혀 있어서 점수와 채점 결과는 선생님만 볼 수 있어요.</div>` : `${scoreBlock(r)}

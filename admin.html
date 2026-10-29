@@ -17,12 +17,12 @@
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const ssGet = k => { try { return sessionStorage.getItem('toefl-admin:' + k); } catch (e) { return null; } };
 const ssSet = (k, v) => { try { v == null ? sessionStorage.removeItem('toefl-admin:' + k) : sessionStorage.setItem('toefl-admin:' + k, v); } catch (e) {} };
-const PART_LABEL = { '0w': 'M1 단어', '0r': 'M1 리딩', '1w': 'M2 단어', '1r': 'M2 리딩', resp: '응답 고르기', conv: '대화', ann: '공지', talk: '강의' };
-const LC_TYPE = { response: '응답 고르기', conversation: '대화', announcement: '공지', talk: '강의' };
+const PART_LABEL = { '0w': 'M1 단어', '0r': 'M1 리딩', '1w': 'M2 단어', '1r': 'M2 리딩', resp: 'Best Response', conv: 'Conversation', ann: 'Announcement', talk: 'Academic Talk' };
+const LC_TYPE = { response: 'Best Response', conversation: 'Conversation', announcement: 'Announcement', talk: 'Academic Talk' };
 const modName = mi => (mi === 0 || mi === 1 ? `M${mi + 1}` : '전체');
 // 빈칸 모아 풀기 기록은 testId가 없고 practice: { from, to }가 있다.
 // 리스닝 기록은 lc: { id, title }가 있다.
-const testLabel = a => (a.lc ? `리스닝 ${a.lc.title}` : !a.practice ? `TEST ${a.testId}` : a.practice.from === a.practice.to ? `빈칸 TEST ${a.practice.from}` : `빈칸 TEST ${a.practice.from}–${a.practice.to}`);
+const testLabel = a => (a.lc ? `리스닝 ${a.lc.title}${a.secs && a.secs.length ? ` (${a.secs.map(s => LC_TYPE[s] || s).join(' · ')})` : ''}` : !a.practice ? `TEST ${a.testId}` : a.practice.from === a.practice.to ? `빈칸 TEST ${a.practice.from}` : `빈칸 TEST ${a.practice.from}–${a.practice.to}`);
 const modLabel = a => (a.practice ? '빈칸' : modName(a.module));
 const rowLabel = x => (x.t != null ? `T${x.t} ` : '') + `M${x.mi + 1}-${x.n}`;
 // 기간·반·회차 필터 (빈 값이면 전체)
