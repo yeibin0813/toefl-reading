@@ -3,7 +3,7 @@
 // 학생에게는 정답 없는 문제만 보내고, 채점은 여기서 한다.
 // 리스닝 음원은 내 드라이브의 "토플 리스닝 음원" 폴더에 모듈마다 파일 하나(<id>_m<k>.json)로 있고,
 // 입장 코드가 맞는 학생에게만 이 서버가 꺼내 보낸다.
-// 리스닝 해설(문항별 해설과 묶음별 스크립트)은 "리스닝해설" 시트에 회차마다 한 줄로 있고, 정답 공개일 때 다시 보기에서만 보낸다.
+// 리스닝 해설(문항별 해설·해석과 묶음별 스크립트·해석)은 "리스닝해설" 시트에 회차마다 한 줄로 있고, 정답 공개일 때 다시 보기에서만 보낸다.
 
 const SH = { settings: '설정', tests: '문제', results: '결과', lc: '리스닝', lcx: '리스닝해설' };
 const LC_FOLDER = '토플 리스닝 음원';
@@ -15,6 +15,10 @@ const DEFAULT_PW = 'toefl1234';
 const RESULT_HEADERS = ['제출 시각', '이름', '회차', '총점', '만점', 'M1 단어', 'M1 리딩', 'M2 단어', 'M2 리딩',
   '소요 시간 (M1 + M2)', '틀린 문항', '틀린 답 → 정답', '상세 (JSON)', '기록 ID', '기간', '반'];
 const LET = ['A', 'B', 'C', 'D'];
+// "리스닝해설" 시트: 회차 하나의 해설 JSON이 시트 칸 하나(5만 자)보다 길어서 4만 5천 자씩 나눠 JSON 1~8 칸에 둔다.
+// 조각이 =, +, - 나 숫자·날짜처럼 보이면 시트가 바꿔 버리므로 조각마다 앞에 ~를 붙여 글자로 두고, 읽을 때 뗀다.
+const LCX_CHUNK = 45000, LCX_CELLS = 8;
+const LCX_HEADERS = ['ID', '해설 수'].concat(Array.from({ length: LCX_CELLS }, (_, i) => 'JSON ' + (i + 1)));
 
 function doGet() { return json_({ ok: true, message: '서버가 작동 중이에요.' }); }
 
@@ -243,11 +247,13 @@ const API = {
       });
       added = appendRows_(sheet, Object.values(fresh));
       // 해설이 없는 파일을 올리면 이미 있는 해설은 그대로 둔다
-      const xs = sheet_(SH.lcx), xrows = xs.getDataRange().getValues(), xidx = {}, xfresh = [];
-      xrows.forEach((row, i) => { if (i) xidx[String(row[0])] = i + 1; });
+      const xs = sheet_(SH.lcx), xn = xs.getLastRow() - 1, xidx = {}, xfresh = [];
+      if (Object.keys(extras).length) xs.getRange(1, 1, 1, LCX_HEADERS.length).setValues([LCX_HEADERS]);
+      if (xn > 0) xs.getRange(2, 1, xn, 1).getValues().forEach((row, i) => { xidx[String(row[0])] = i + 2; });
       Object.keys(extras).forEach(id => {
-        const line = [id, Object.keys(extras[id].x).length, JSON.stringify(extras[id])];
-        if (xidx[id]) xs.getRange(xidx[id], 1, 1, 3).setValues([line]); else xfresh.push(line);
+        const json = JSON.stringify(extras[id]), cells = Array.from({ length: LCX_CELLS }, (_, i) => json.slice(i * LCX_CHUNK, (i + 1) * LCX_CHUNK)).map(c => (c ? '~' + c : ''));
+        const line = [id, Object.keys(extras[id].q).length].concat(cells);
+        if (xidx[id]) xs.getRange(xidx[id], 1, 1, line.length).setValues([line]); else xfresh.push(line);
         explained++;
       });
       appendRows_(xs, xfresh);
@@ -446,39 +452,53 @@ function stripLc_(t) {
     type: it.type, heading: it.heading, from: it.from, to: it.to, clip: it.audio.split('/').pop().replace(/\.mp3$/, ''), secs: it.secs,
     questions: it.questions.map(q => ({ n: q.n, q: q.q, c: q.c })) })) })) };
 }
-// 올린 회차에서 해설(q.x)과 스크립트(it.script)를 떼어 낸다 -> { s: { "모듈:첫 문항": 스크립트 }, x: { "모듈-문항": 해설 } }, 없으면 null
+// 올린 회차에서 해설을 떼어 낸다. 없으면 null.
+// 올리는 파일: 묶음마다 it.script(원문)·it.lines([{ sp: "M"|"W"|"", en, ko }]), 문항마다 q.ex({ qk, type, ok[4], ul[4][], ev, exp })
+// 저장: { i: { "모듈:첫 문항": { s: 원문, l: lines } }, q: { "모듈-문항": ex } }
 function lcExtra_(t) {
-  const s = {}, x = {};
+  const i = {}, q = {}, str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
   t.modules.forEach((m, mi) => m.items.forEach(it => {
-    if (typeof it.script === 'string' && it.script.trim()) s[mi + ':' + it.from] = it.script.trim().slice(0, 8000);
-    delete it.script;
-    it.questions.forEach(q => { if (typeof q.x === 'string' && q.x.trim()) x[mi + '-' + q.n] = q.x.trim().slice(0, 2000); delete q.x; });
+    const x = {};
+    if (typeof it.script === 'string' && it.script.trim()) x.s = it.script.trim().slice(0, 8000);
+    if (Array.isArray(it.lines) && it.lines.length) x.l = it.lines.slice(0, 200).map(l => ({ sp: l && (l.sp === 'M' || l.sp === 'W') ? l.sp : '', en: str(l && l.en, 2000), ko: str(l && l.ko, 2000) }));
+    if (x.s || x.l) i[mi + ':' + it.from] = x;
+    delete it.script; delete it.lines;
+    it.questions.forEach(qq => {
+      const e = qq.ex;
+      if (e && typeof e === 'object' && typeof e.exp === 'string' && e.exp.trim()) {
+        q[mi + '-' + qq.n] = { qk: str(e.qk, 500), type: str(e.type, 200), ok: (Array.isArray(e.ok) ? e.ok : []).slice(0, 4).map(v => str(v, 400)),
+          ul: (Array.isArray(e.ul) ? e.ul : []).slice(0, 4).map(u => (Array.isArray(u) ? u : []).slice(0, 8).map(v => str(v, 200))), ev: str(e.ev, 1500), exp: str(e.exp, 4000) };
+      }
+      delete qq.ex; delete qq.x;
+    });
   }));
-  if (!Object.keys(s).length && !Object.keys(x).length) return null;
-  // 시트 칸 하나에 5만 자까지 들어간다
-  if (JSON.stringify({ s, x }).length > 49000) throw new Error(lcTitle_(t) + ': 해설이 너무 길어요 (시트 칸 하나에 다 들어가지 않아요).');
-  return { s, x };
+  if (!Object.keys(q).length) return null;
+  if (JSON.stringify({ i, q }).length > LCX_CHUNK * LCX_CELLS) throw new Error(lcTitle_(t) + ': 해설이 너무 길어요 (시트 한 줄에 다 들어가지 않아요).');
+  return { i, q };
 }
 function loadLcx_(id) {
   const sheet = sheet_(SH.lcx), n = sheet.getLastRow() - 1;
   if (n < 1) return null;
   const ids = sheet.getRange(2, 1, n, 1).getValues();
-  for (let i = 0; i < n; i++) if (String(ids[i][0]) === String(id)) { try { return JSON.parse(sheet.getRange(i + 2, 3).getValue()); } catch (e) { return null; } }
+  for (let r = 0; r < n; r++) {
+    if (String(ids[r][0]) !== String(id)) continue;
+    try { return JSON.parse(sheet.getRange(r + 2, 3, 1, LCX_CELLS).getValues()[0].map(c => String(c).replace(/^~/, '')).join('')); } catch (e) { return null; }
+  }
   return null;
 }
 // 이 기록에서 푼 문항의 해설과, 그 문항이 든 묶음의 스크립트만 보낸다 (안 푼 문항의 정답이 해설로 새지 않게)
 function lcExtraFor_(t, rows) {
   const ex = loadLcx_(t.id);
-  if (!ex) return null;
-  const keys = new Set(rows.map(r => r.k)), s = {}, x = {};
+  if (!ex || !ex.q) return null;
+  const keys = new Set(rows.map(r => r.k)), i = {}, q = {};
   t.modules.forEach((m, mi) => m.items.forEach(it => {
-    const qs = it.questions.filter(q => keys.has(mi + '-' + q.n));
+    const qs = it.questions.filter(x => keys.has(mi + '-' + x.n));
     if (!qs.length) return;
-    const sk = mi + ':' + it.from;
-    if (ex.s && ex.s[sk]) s[sk] = ex.s[sk];
-    qs.forEach(q => { const k = mi + '-' + q.n; if (ex.x && ex.x[k]) x[k] = ex.x[k]; });
+    const ik = mi + ':' + it.from;
+    if (ex.i && ex.i[ik]) i[ik] = ex.i[ik];
+    qs.forEach(x => { const k = mi + '-' + x.n; if (ex.q[k]) q[k] = ex.q[k]; });
   }));
-  return Object.keys(s).length || Object.keys(x).length ? { s, x } : null;
+  return Object.keys(q).length ? { i, q } : null;
 }
 // 관리자 목록에 보일 회차별 해설 수
 function lcxCounts_() {
@@ -715,7 +735,7 @@ function sheet_(name) {
   } else if (name === SH.lc) {
     sheet.appendRow(['ID', '세트', '회차', '문제 수', 'JSON']);
   } else if (name === SH.lcx) {
-    sheet.appendRow(['ID', '해설 수', 'JSON (해설·스크립트)']);
+    sheet.appendRow(LCX_HEADERS);
   } else if (name === SH.results) {
     sheet.appendRow(RESULT_HEADERS); sheet.getRange('A:A').setNumberFormat('yyyy-mm-dd hh:mm');
   }
