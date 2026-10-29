@@ -150,9 +150,9 @@ const API = {
     withLock_(() => deleteRows_(SH.tests, 0, r.id));
     return { tests: allTests_().map(testSummary_) };
   },
-  listLc(r) { checkPw_(r.pw); const tests = allLc_(); return { tests: tests.map(lcSummary_), audio: lcAudioStatus_(tests) }; },
+  listLc(r) { checkAdmin_(r); const tests = allLc_(); return { tests: tests.map(lcSummary_), audio: lcAudioStatus_(tests) }; },
   saveLc(r) {
-    checkPw_(r.pw);
+    checkAdmin_(r);
     const list = Array.isArray(r.tests) ? r.tests : (r.tests && r.tests.tests) || [];
     if (!list.length) throw new Error('추가할 리스닝 회차가 없어요.');
     list.forEach(validateLc_);
@@ -173,7 +173,7 @@ const API = {
   },
   // 음원 묶음 하나(<id>_m<k>.json)를 드라이브 "토플 리스닝 음원" 폴더에 저장한다. 같은 이름이 있으면 휴지통으로 보내고 새로 만든다.
   saveAudio(r) {
-    checkPw_(r.pw);
+    checkAdmin_(r);
     const name = String(r.name || '');
     if (!/^(new|tpo)-\d+_m[12]\.json$/.test(name)) throw new Error('음원 파일 이름이 잘못됐어요: ' + name);
     const folder = lcFolder_(true), old = folder.searchFiles('title = "' + name + '" and trashed = false');
@@ -236,6 +236,22 @@ function setSetting_(key, value) {
 function checkPw_(pw) {
   const real = setting_('관리자비밀번호');
   if (!pw || String(pw) !== real) throw new Error('비밀번호가 맞지 않아요.');
+}
+// 리스닝 회차·음원 올리기는 관리자 비밀번호 대신 임시 올리기 키로도 할 수 있다.
+// 키는 편집기에서 makeUploadKey를 실행하면 3시간짜리로 생기고(실행 로그에 나옴), clearUploadKey로 바로 지울 수 있다.
+function checkAdmin_(r) {
+  if (r.key == null) return checkPw_(r.pw);
+  const v = String(PropertiesService.getScriptProperties().getProperty('uploadKey') || '').split('|');
+  if (!v[0] || String(r.key) !== v[0] || !(Date.now() < Number(v[1]))) throw new Error('올리기 키가 맞지 않거나 만료됐어요.');
+}
+function makeUploadKey() {
+  const k = Utilities.getUuid().replace(/-/g, '');
+  PropertiesService.getScriptProperties().setProperty('uploadKey', k + '|' + (Date.now() + 3 * 3600 * 1000));
+  Logger.log('UPLOADKEY=' + k + ' (3시간 동안 쓸 수 있어요)');
+}
+function clearUploadKey() {
+  PropertiesService.getScriptProperties().deleteProperty('uploadKey');
+  Logger.log('올리기 키를 지웠어요.');
 }
 function checkCode_(code) {
   const real = setting_('입장코드');
