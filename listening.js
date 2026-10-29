@@ -334,12 +334,56 @@ function lcResumeExits(e) {
 }
 
 /* ---------- 다시 보기 ---------- */
-// 다시 볼 때 쓰는 음원 (시험용 LC와 따로 둔다). '음원 받기'를 누르면 그 모듈 묶음을 받고, 문항 묶음마다 마음대로 다시 들을 수 있다.
-// tok: 받기마다 새로 만든다. 늦게 끝난 예전 받기가 지금 것을 덮지 않게 한다.
-const LCR = { key: '', clips: null, loading: false, err: '', tok: null };
+// 다시 볼 때 쓰는 음원 (시험용 LC와 따로 둔다). '음원 불러오기'를 누르면 그 모듈 묶음을 받고, 문항 묶음마다 마음대로 다시 들을 수 있다.
+// 화면에 <audio>를 두지 않고 재생기 하나(au)를 버튼과 막대로 튼다. 브라우저 재생기에 있는 '다운로드' 메뉴로 파일을 저장하지 못하게 하려는 것이다.
+// tok: 불러오기마다 새로 만든다. 늦게 끝난 예전 불러오기가 지금 것을 덮지 않게 한다. cur: 재생기에 걸린 음원 이름
+const LCR = { key: '', clips: null, loading: false, err: '', tok: null, au: null, cur: null, drag: null };
 function rvRelease() {
+  if (LCR.au) { try { LCR.au.pause(); LCR.au.removeAttribute('src'); LCR.au.load(); } catch (e) {} }
   if (LCR.clips) Object.values(LCR.clips).forEach(u => URL.revokeObjectURL(u));
-  Object.assign(LCR, { key: '', clips: null, loading: false, err: '', tok: null });
+  Object.assign(LCR, { key: '', clips: null, loading: false, err: '', tok: null, cur: null });
+}
+function rvAu() {
+  if (LCR.au) return LCR.au;
+  const au = LCR.au = new Audio();
+  ['timeupdate', 'loadedmetadata', 'play', 'pause', 'ended'].forEach(ev => au.addEventListener(ev, rvTick));
+  return au;
+}
+// 음원을 재생기에 건다 (다른 음원이 걸려 있었으면 바꾼다). 시작 위치 frac(0~1)를 주면 거기부터
+function rvLoad(clip, frac) {
+  const au = rvAu(), url = LCR.clips && LCR.clips[clip]; if (!url) return null;
+  if (LCR.cur !== clip) { LCR.cur = clip; au.src = url; }
+  if (frac != null) { const go = () => { if (au.duration) au.currentTime = frac * au.duration; rvTick(); }; au.duration ? go() : au.addEventListener('loadedmetadata', go, { once: true }); }
+  return au;
+}
+function rvToggle(clip) {
+  const au = rvLoad(clip); if (!au) return;
+  if (au.paused) au.play().catch(() => {}); else au.pause();
+  rvTick();
+}
+// 막대를 손가락·마우스로 끄는 동안에는 재생 위치로 막대를 되돌리지 않는다
+document.addEventListener('pointerdown', ev => { if (ev.target.dataset && ev.target.dataset.rvseek != null) LCR.drag = ev.target; });
+['pointerup', 'pointercancel'].forEach(n => document.addEventListener(n, () => { LCR.drag = null; }));
+// 음원 하나의 재생기 표시. 길이를 알면 막대 단위는 초 (화살표 키로 1초씩 옮긴다), 모르면 0~1000
+function rvState(clip) {
+  const au = LCR.au, on = !!au && clip === LCR.cur, d = on && au.duration || 0, t = on ? au.currentTime || 0 : 0;
+  return { label: on && !au.paused ? '❚❚ 멈춤' : '▶ 듣기', max: d ? Math.max(1, Math.round(d)) : 1000, value: d ? Math.round(t) : 0,
+    text: `${fmtTime(t)} / ${d ? fmtTime(d) : '--:--'}` };
+}
+// 재생 버튼·막대·시간만 고친다 (화면 전체를 다시 그리지 않아서 막대를 끄는 중에도 끊기지 않는다)
+function rvTick() {
+  document.querySelectorAll('.rvplay').forEach(el => {
+    const s = rvState(el.dataset.clip), bar = el.querySelector('input');
+    el.querySelector('button').textContent = s.label;
+    el.querySelector('.t').textContent = s.text;
+    if (LCR.drag !== bar) { bar.max = s.max; bar.value = s.value; }
+    bar.setAttribute('aria-valuetext', s.text);
+  });
+}
+// 화면을 다시 그린 뒤: 틀는 음원의 재생기가 화면에서 빠졌으면(틀린 문항만 보기 등) 멈춘다
+function rvSync() {
+  if (LCR.au && LCR.cur && !document.querySelector(`.rvplay[data-clip="${CSS.escape(LCR.cur)}"]`)) LCR.au.pause();
+  rvTick();
 }
 async function rvAudioLoad() {
   const V = S.review; if (!V || !V.r || !V.r.lc) return;
@@ -362,24 +406,22 @@ function lcReviewBody(V) {
   const r = V.r, t = V.content.test, m = t.modules[r.module], by = rowMap(r.rows);
   if (!m) return '';
   const key = r.lc.id + '_m' + r.module, mine = LCR.key === key, mb = lcMB((t.packs || [])[r.module] || 0);
-  const bar = mine && LCR.clips ? '' : mine && LCR.loading ? `<div class="banner">음원을 받는 중이에요… (약 ${mb}MB)</div>`
-    : `<div class="toolbar"><button class="btn" data-act="rvAudio">음원 받기 · 약 ${mb}MB</button><span class="note">받으면 문항 묶음마다 다시 들을 수 있어요.</span></div>
+  const bar = mine && LCR.clips ? '' : mine && LCR.loading ? `<div class="banner">음원을 불러오는 중이에요… (약 ${mb}MB)</div>`
+    : `<div class="toolbar"><button class="btn" data-act="rvAudio">음원 불러오기 · 약 ${mb}MB</button><span class="note">불러오면 이 화면에서 문항 묶음마다 다시 들을 수 있어요.</span></div>
        ${mine && LCR.err ? `<div class="banner bad">${esc(LCR.err)}</div>` : ''}`;
   const items = m.items.map(it => {
     it.questions.forEach(q => { const x = by[r.module + '-' + q.n]; if (x) V.seen.add(x.k); });
     const qs = it.questions.filter(q => { const x = by[r.module + '-' + q.n]; return x && (!V.onlyWrong || !x.ok); });
     if (!qs.length) return '';
-    const url = mine && LCR.clips && LCR.clips[it.clip];
+    const s = mine && LCR.clips && LCR.clips[it.clip] ? rvState(it.clip) : null;
+    const player = s ? `<div class="rvplay" data-clip="${esc(it.clip)}"><button class="btn small" data-act="rvPlay" data-clip="${esc(it.clip)}">${s.label}</button>
+      <input type="range" min="0" max="${s.max}" step="1" value="${s.value}" data-rvseek="${esc(it.clip)}" aria-label="${esc(it.heading)} 재생 위치" aria-valuetext="${s.text}"><span class="t num">${s.text}</span></div>` : '';
     return `<section class="stack rvitem"><div class="qhead" style="margin:0"><h3>${esc(it.heading)}</h3><span class="note num">${LC_TYPE[it.type] || ''} · ${it.from === it.to ? `Question ${it.from}` : `Questions ${it.from}–${it.to}`}</span></div>
-      ${url ? `<audio controls preload="metadata" src="${url}" aria-label="${esc(it.heading)} 음원"></audio>` : ''}
+      ${player}
       ${qs.map(q => rvChoice(q.n, q.q || '가장 알맞은 응답을 고르세요.', q.c, by[r.module + '-' + q.n])).join('')}</section>`;
   }).join('');
   return items ? bar + items : '';
 }
-// 다시 보기에서 음원 하나를 틀면 다른 음원은 멈춘다
-document.addEventListener('play', ev => {
-  if (ev.target.closest && ev.target.closest('.rvitem')) document.querySelectorAll('.rvitem audio').forEach(a => { if (a !== ev.target) a.pause(); });
-}, true);
 
 /* ---------- 이벤트 ---------- */
 document.addEventListener('click', ev => {
@@ -397,6 +439,7 @@ document.addEventListener('click', ev => {
   else if (act === 'lcPickAgain') { S.screen = 'lcpick'; S.result = null; S.err = ''; render(); window.scrollTo(0, 0); }
   else if (act === 'tab') { S.tab = b.dataset.tab; lsSet(':tab', S.tab); S.err = ''; render(); }
   else if (act === 'rvAudio') rvAudioLoad();
+  else if (act === 'rvPlay') rvToggle(b.dataset.clip);
 });
 document.addEventListener('change', ev => {
   const el = ev.target;
@@ -412,6 +455,7 @@ document.addEventListener('change', ev => {
   }
 });
 document.addEventListener('input', ev => {
+  if (ev.target.dataset && ev.target.dataset.rvseek != null) { const el = ev.target; rvLoad(el.dataset.rvseek, Number(el.value) / (Number(el.max) || 1000)); return; }
   if (ev.target.id === 'lcvol') {
     LC.vol = Math.max(0, Math.min(1, Number(ev.target.value)));
     if (LC.au && LC_VOL_OK) LC.au.volume = LC.vol;

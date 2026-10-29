@@ -503,6 +503,7 @@ function render() {
   app.innerHTML = topBar() + `<main class="wrap">${view}</main>` + viewModal();
   document.body.classList.toggle('exam-on', S.screen === 'exam' && !!S.exam);
   document.body.classList.toggle('review-on', S.screen === 'review' && !!S.review);
+  if (S.screen === 'review') rvSync();
   if (active) { const el = document.getElementById(active); if (el) el.focus(); }
 }
 

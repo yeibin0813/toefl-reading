@@ -200,7 +200,10 @@ label.btn { cursor: pointer; }
 .rvb.bad.none { text-decoration: none; }
 .rvb.fix { color: var(--ok); font-weight: 600; margin-left: 2px; box-shadow: inset 0 -2px 0 var(--ok); border-radius: 0; }
 .insmark { font-family: var(--font-num); font-size: 13px; font-weight: 600; border: 1px solid var(--accent); color: var(--accent); border-radius: 4px; padding: 0 6px; margin: 0 2px; white-space: nowrap; }
-.rvitem audio { width: 100%; max-width: 520px; }
+.rvplay { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.rvplay button { min-width: 84px; }
+.rvplay input[type="range"] { flex: 1; min-width: 140px; max-width: 360px; accent-color: var(--accent); }
+.rvplay .t { font-size: 13px; color: var(--muted); }
 .review-on .passage, .review-on .words, .review-on .rvq { user-select: none; -webkit-user-select: none; }
 .insmark.mine { background: var(--accent-soft); }
 .insmark.mine.bad { border-color: var(--bad); color: var(--bad); background: var(--bad-soft); }
