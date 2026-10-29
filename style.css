@@ -204,7 +204,14 @@ label.btn { cursor: pointer; }
 .rvplay button { min-width: 84px; }
 .rvplay input[type="range"] { flex: 1; min-width: 140px; max-width: 360px; accent-color: var(--accent); }
 .rvplay .t { font-size: 13px; color: var(--muted); }
-.review-on .passage, .review-on .words, .review-on .rvq { user-select: none; -webkit-user-select: none; }
+/* 리스닝 해설과 스크립트 */
+.rvx { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; padding: 10px 14px; font-size: 14px; line-height: 1.65; }
+.rvx b { display: block; font-size: 12px; letter-spacing: .04em; color: var(--accent); margin-bottom: 2px; }
+.rvx p { margin: 0; white-space: pre-line; }
+.rvscript { border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+.rvscript summary { cursor: pointer; padding: 9px 14px; font-size: 14px; font-weight: 600; color: var(--accent); }
+.rvscript p { margin: 0; padding: 0 14px 12px; font-family: var(--font-read); font-size: 16px; line-height: 1.7; }
+.review-on .passage, .review-on .words, .review-on .rvq, .review-on .rvscript { user-select: none; -webkit-user-select: none; }
 .insmark.mine { background: var(--accent-soft); }
 .insmark.mine.bad { border-color: var(--bad); color: var(--bad); background: var(--bad-soft); }
 .insmark.right { border-color: var(--ok); color: var(--ok); background: var(--ok-soft); }

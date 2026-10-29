@@ -364,7 +364,7 @@ function lcResumeExits(e) {
 // 다시 볼 때 쓰는 음원 (시험용 LC와 따로 둔다). '음원 불러오기'를 누르면 그 모듈 묶음을 받고, 문항 묶음마다 마음대로 다시 들을 수 있다.
 // 화면에 <audio>를 두지 않고 재생기 하나(au)를 버튼과 막대로 튼다. 브라우저 재생기에 있는 '다운로드' 메뉴로 파일을 저장하지 못하게 하려는 것이다.
 // tok: 불러오기마다 새로 만든다. 늦게 끝난 예전 불러오기가 지금 것을 덮지 않게 한다. cur: 재생기에 걸린 음원 이름
-const LCR = { key: '', clips: null, loading: false, err: '', tok: null, au: null, cur: null, drag: null };
+const LCR = { key: '', clips: null, loading: false, err: '', tok: null, au: null, cur: null, drag: null, open: new Set() };
 function rvRelease() {
   if (LCR.au) { try { LCR.au.pause(); LCR.au.removeAttribute('src'); LCR.au.load(); } catch (e) {} }
   if (LCR.clips) Object.values(LCR.clips).forEach(u => URL.revokeObjectURL(u));
@@ -437,7 +437,8 @@ async function rvAudioLoad() {
 }
 // 리스닝 다시 보기: 모듈마다 문항 묶음별로 음원(불러왔으면)과 문제
 function lcReviewBody(V) {
-  const r = V.r, t = V.content.test, mods = rvMods(r, t), by = rowMap(r.rows);
+  // ex: 정답 공개일 때 서버가 보내는 해설 { s: { "모듈:첫 문항": 스크립트 }, x: { "모듈-문항": 해설 } }
+  const r = V.r, t = V.content.test, mods = rvMods(r, t), by = rowMap(r.rows), ex = V.content.extra || { s: {}, x: {} };
   if (!mods.length || mods.some(mi => !t.modules[mi])) return '';
   const key = r.lc.id + '_m' + mods.join(''), mine = LCR.key === key;
   const mb = lcMB(mods.reduce((n, mi) => n + ((t.packs || [])[mi] || 0), 0));
@@ -449,12 +450,13 @@ function lcReviewBody(V) {
       it.questions.forEach(q => { const x = by[mi + '-' + q.n]; if (x) V.seen.add(x.k); });
       const qs = it.questions.filter(q => { const x = by[mi + '-' + q.n]; return x && (!V.onlyWrong || !x.ok); });
       if (!qs.length) return '';
-      const clip = mi + ':' + it.clip, s = mine && LCR.clips && LCR.clips[clip] ? rvState(clip) : null;
+      const clip = mi + ':' + it.clip, s = mine && LCR.clips && LCR.clips[clip] ? rvState(clip) : null, script = ex.s[mi + ':' + it.from];
       const player = s ? `<div class="rvplay" data-clip="${esc(clip)}"><button class="btn small" data-act="rvPlay" data-clip="${esc(clip)}">${s.label}</button>
         <input type="range" min="0" max="${s.max}" step="1" value="${s.value}" data-rvseek="${esc(clip)}" aria-label="${esc(it.heading)} 재생 위치" aria-valuetext="${s.text}"><span class="t num">${s.text}</span></div>` : '';
       return `<section class="stack rvitem"><div class="qhead" style="margin:0"><h3>${esc(it.heading)}</h3><span class="note num">${LC_TYPE[it.type] || ''} · ${it.from === it.to ? `Question ${it.from}` : `Questions ${it.from}–${it.to}`}</span></div>
         ${player}
-        ${qs.map(q => rvChoice(q.n, q.q || '가장 알맞은 응답을 고르세요.', q.c, by[mi + '-' + q.n])).join('')}</section>`;
+        ${script && it.type !== 'response' ? `<details class="rvscript" data-sk="${esc(r.id + '|' + mi + ':' + it.from)}"${LCR.open.has(r.id + '|' + mi + ':' + it.from) ? ' open' : ''}><summary>스크립트 보기</summary><p>${esc(script)}</p></details>` : ''}
+        ${qs.map(q => rvChoice(q.n, q.q || (it.type === 'response' && script ? script : '가장 알맞은 응답을 고르세요.'), q.c, by[mi + '-' + q.n], '', ex.x[mi + '-' + q.n])).join('')}</section>`;
     }).join('');
     return items && mods.length > 1 ? `<h3 class="rvmod">${esc(t.modules[mi].name)}</h3>${items}` : items;
   }).join('');
@@ -479,6 +481,8 @@ document.addEventListener('click', ev => {
   else if (act === 'rvAudio') rvAudioLoad();
   else if (act === 'rvPlay') rvToggle(b.dataset.clip);
 });
+// 펼친 스크립트는 화면을 다시 그려도 펼친 채로 둔다 (toggle은 버블링되지 않아서 capture로 받는다)
+document.addEventListener('toggle', ev => { const d = ev.target; if (d.dataset && d.dataset.sk) LCR.open[d.open ? 'add' : 'delete'](d.dataset.sk); }, true);
 document.addEventListener('change', ev => {
   const el = ev.target;
   if (el.type === 'checkbox' && el.dataset.lcsec != null && S.lcPick) {

@@ -55,7 +55,7 @@ async function login(pw) {
 }
 async function loadResults() { await run('results', async () => { S.results = (await call('listResults')).results; }); }
 async function loadTests() { await run('tests', async () => { const j = await call('listTests'); S.tests = j.tests; }); }
-async function loadLc() { await run('lc', async () => { const j = await call('listLc'); S.lc = j.tests; S.lcAudio = j.audio; }); }
+async function loadLc() { await run('lc', async () => { const j = await call('listLc'); S.lc = j.tests; S.lcAudio = j.audio; S.lcEx = j.ex || {}; }); }
 
 /* ---------- 화면 ---------- */
 function topBar() {
@@ -162,12 +162,14 @@ function viewLcTests() {
     : `<p class="hint">드라이브 "토플 리스닝 음원" 폴더: 음원 파일 <b>${a.files}개</b> (회차마다 모듈 2개 = 파일 2개)</p>` +
       (a.dup ? `<div class="banner warn">같은 이름의 폴더가 ${a.dup + 1}개 있어요. 파일이 가장 많은 폴더를 쓰고 있어요. 나머지는 지워도 돼요.</div>` : '') +
       (miss.length ? `<div class="banner warn">음원이 없는 모듈이 ${miss.length}개 있어요. 이 모듈은 학생이 시작할 수 없어요: ${esc(miss.slice(0, 12).join(', '))}${miss.length > 12 ? ` 외 ${miss.length - 12}개` : ''}</div>` : '');
+  const exN = id => (S.lcEx || {})[id];
   const rows = set => (list || []).filter(t => t.set === set).map(t => `<tr><td class="num"><b>${esc(t.title)}</b></td>${t.modules.map(m => `<td>${m.count}문제</td>`).join('')}
+    <td>${exN(t.id) ? `${exN(t.id)}개` : '<span class="note">없음</span>'}</td>
     <td>${isOpen(t.no, set === 'new' ? 'lcNew' : 'lcTpo') ? '<span class="mark ok">열림</span>' : '<span class="note">닫힘</span>'}</td>
     <td><button class="btn small danger" data-act="delLcAsk" data-id="${esc(t.id)}">삭제</button></td></tr>`).join('');
-  const table = set => `<table><thead><tr><th>회차</th><th>Module 1</th><th>Module 2</th><th>열림</th><th></th></tr></thead><tbody>${rows(set)}</tbody></table>`;
+  const table = set => `<table><thead><tr><th>회차</th><th>Module 1</th><th>Module 2</th><th>해설</th><th>열림</th><th></th></tr></thead><tbody>${rows(set)}</tbody></table>`;
   return `<div class="sheet form"><h2>리스닝 회차</h2>${audio}
-      <p class="hint">리스닝 문제 파일(lc_tests.json)을 고르면 그 안의 회차가 추가돼요. 음원은 드라이브 폴더에서 따로 읽어요.</p>
+      <p class="hint">리스닝 문제 파일(lc_tests.json)을 고르면 그 안의 회차가 추가돼요. 음원은 드라이브 폴더에서 따로 읽어요. 파일에 해설이 들어 있으면 해설도 함께 올라가고, 학생은 정답 공개가 켜져 있을 때 다시 보기에서 해설과 스크립트를 볼 수 있어요.</p>
       <input type="file" id="lcFile" accept=".json,application/json" onchange="pickFile(this)">${S.lcFile ? `<span class="hint">고른 파일: <b>${esc(S.lcFile.name)}</b></span>` : ''}
       <div><button class="btn primary" data-act="lcUpload"${S.busy.lcUpload ? ' disabled' : ''}>${S.busy.lcUpload ? '올리는 중…' : '올리기'}</button></div>
       ${viewAudioUpload()}</div>
@@ -278,14 +280,14 @@ document.addEventListener('click', ev => {
   if (act === 'tab') { S.tab = b.dataset.tab; S.msg = null; render(); }
   else if (act === 'logout') { S.loggedIn = false; S.pw = ''; ssSet('pw', null); S.results = S.tests = S.lc = null; render(); }
   else if (act === 'delLcAsk') { const id = b.dataset.id, t = (S.lc || []).find(x => x.id === id);
-    S.confirm = { title: `리스닝 ${t ? t.title : id}을 지울까요?`, text: '문제가 시트에서 지워져요. 드라이브 음원과 이미 제출된 결과는 그대로 남아요.', label: '지우기', fn: () => run('delLc', async () => { S.lc = (await call('deleteLc', { id })).tests; flash('ok', '지웠어요.'); }) }; render(); }
+    S.confirm = { title: `리스닝 ${t ? t.title : id}을 지울까요?`, text: '문제가 시트에서 지워져요. 드라이브 음원과 이미 제출된 결과는 그대로 남아요.', label: '지우기', fn: () => run('delLc', async () => { const j = await call('deleteLc', { id }); S.lc = j.tests; S.lcEx = j.ex || {}; flash('ok', '지웠어요.'); }) }; render(); }
   else if (act === 'lcUpload') {
     const file = S.lcFile;
     if (!file) return flash('bad', '먼저 lc_tests.json 파일을 골라 주세요.');
     run('lcUpload', async () => {
       let data; try { data = JSON.parse(await file.text()); } catch (e) { throw new Error('JSON 파일이 아니거나 형식이 깨졌어요.'); }
       const j = await call('saveLc', { tests: data });
-      S.lc = j.tests; S.lcFile = null; flash('ok', `리스닝 추가 ${j.added}회차, 갱신 ${j.updated}회차.`);
+      S.lc = j.tests; S.lcEx = j.ex || {}; S.lcFile = null; flash('ok', `리스닝 추가 ${j.added}회차, 갱신 ${j.updated}회차${j.explained ? `, 해설 ${j.explained}회차` : ''}.`);
       loadLc();  // 빠진 음원 목록도 새로
     });
   }
