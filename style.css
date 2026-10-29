@@ -84,6 +84,24 @@ th { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .03
 tr.click { cursor: pointer; }
 tr.click:hover td { background: var(--accent-soft); }
 tr.sel td { background: var(--accent-soft); }
+/* 관리자: 학생별·회차별 확인 */
+.filters { display: grid; gap: 10px; padding: 14px 16px; }
+input[type="date"] { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
+.dchip { font: inherit; font-size: 13px; font-weight: 600; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--paper); color: var(--muted); }
+.dchip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.pill { display: inline-block; font-family: var(--font-num); font-size: 13px; font-weight: 600; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.pill.p-good { color: var(--ok); background: var(--ok-soft); }
+.pill.p-mid { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.pill.p-bad { color: var(--bad); background: var(--bad-soft); }
+.strip { display: inline-flex; gap: 2px; vertical-align: middle; }
+.strip i { width: 9px; height: 16px; border-radius: 2px; background: color-mix(in srgb, var(--line) 70%, transparent); }
+.strip i.d1 { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+.strip i.d2 { background: var(--accent); }
+tr.day td { background: color-mix(in srgb, var(--line) 25%, transparent); }
+tr.inside > td { background: var(--bg); padding: 10px; }
+tr.inside .tablebox { border-radius: 10px; }
+.hwc { display: flex; gap: 4px; align-items: center; white-space: nowrap; line-height: 1.8; }
+table.hw th { white-space: nowrap; }
 
 /* exam */
 .qhead { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }

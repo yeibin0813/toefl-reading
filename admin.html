@@ -25,16 +25,31 @@ const modName = mi => (mi === 0 || mi === 1 ? `M${mi + 1}` : '전체');
 const testLabel = a => (a.lc ? `리스닝 ${a.lc.title}${a.secs && a.secs.length ? ` (${a.secs.map(s => LC_TYPE[s] || s).join(' · ')})` : ''}` : !a.practice ? `TEST ${a.testId}` : a.practice.from === a.practice.to ? `빈칸 TEST ${a.practice.from}` : `빈칸 TEST ${a.practice.from}–${a.practice.to}`);
 const modLabel = a => (a.practice ? '빈칸' : modName(a.module));
 const rowLabel = x => (x.t != null ? `T${x.t} ` : '') + `M${x.mi + 1}-${x.n}`;
-// 기간·반·회차 필터 (빈 값이면 전체)
+// 학생 이름은 띄어쓰기만 다르면 한 사람으로 본다. 이름에 '테스트'·'확인용'이 들어간 기록은 선생님 확인용으로 보고 숨길 수 있다.
+const nk = s => String(s ?? '').replace(/\s+/g, '');
+const isTestName = a => /테스트|확인용/.test(a.name);
+const dkey = ms => { const d = new Date(ms); return isNaN(d) ? '' : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const today = () => dkey(Date.now());
+const addDays = (k, n) => { const d = new Date(k + 'T12:00'); d.setDate(d.getDate() + n); return dkey(d.getTime()); };
+const dlabel = k => { const d = new Date(k + 'T00:00'); return `${d.getMonth() + 1}/${d.getDate()} (${'일월화수목금토'[d.getDay()]})`; };
+const pct = a => (a.total ? Math.round(a.score / a.total * 100) : 0);
+const pill = v => `<span class="pill ${v >= 80 ? 'p-good' : v >= 50 ? 'p-mid' : 'p-bad'}">${v}%</span>`;
+const secsOf = a => (a.used || []).reduce((n, x) => n + (Number(x) || 0), 0);
+const hm = t => (t >= 3600 ? `${Math.floor(t / 3600)}시간 ${Math.round(t % 3600 / 60)}분` : `${Math.round(t / 60)}분`);
+// 기간·반·회차·날짜·이름 필터 (빈 값이면 전체). 학생별·회차별·많이 틀린 문항·전체 기록이 함께 쓴다.
 const inFilter = a => (!S.period || a.period === S.period) && (!S.cls || a.cls === S.cls) &&
-  (S.filter === 'all' || (S.filter === 'words' ? !!a.practice : S.filter === 'lc' ? !!a.lc : !a.practice && !a.lc && String(a.testId) === S.filter));
+  (S.filter === 'all' || (S.filter === 'words' ? !!a.practice : S.filter === 'lc' ? !!a.lc : !a.practice && !a.lc && String(a.testId) === S.filter)) &&
+  (!S.from || dkey(a.finishedAt) >= S.from) && (!S.to || dkey(a.finishedAt) <= S.to) &&
+  (!S.hideTest || !isTestName(a)) && (!S.q || nk(a.name).includes(nk(S.q)));
 const fmtDate = ms => { const d = new Date(ms); return `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const fmtTime = s => { s = Math.max(0, Math.round(s || 0)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); };
 
 // busy: 지금 진행 중인 요청들 ({ results: true, lc: true, ... }). 하나가 끝나도 다른 요청의 '불러오는 중'은 그대로 둔다.
 // file / lcFile: 올리려고 고른 파일 (화면을 다시 그려도 사라지지 않게 여기 둔다)
-const S = { pw: ssGet('pw') || '', loggedIn: false, tab: 'results', busy: {}, msg: null, settings: null, file: null, lcFile: null,
-  results: null, period: '', cls: '', filter: 'all', sel: null, onlyWrong: true, tests: null, confirm: null };
+// open: 학생별 탭에서 펼친 학생, days: 그 학생의 펼친 날짜들, hwKind: 회차별 확인에서 볼 시험 종류 (rc 리딩, lc 리스닝)
+const S = { pw: ssGet('pw') || '', loggedIn: false, tab: ssGet('tab') || 'students', busy: {}, msg: null, settings: null, file: null, lcFile: null,
+  results: null, period: '', cls: '', filter: 'all', from: '', to: '', q: '', hideTest: true, sel: null, open: null, days: null, daysFor: null, hwKind: 'rc',
+  onlyWrong: true, tests: null, confirm: null };
 
 const call = (action, body) => api(action, Object.assign({ pw: S.pw }, body || {}));
 function flash(kind, text) { S.msg = { kind, text }; render(); clearTimeout(flash.t); flash.t = setTimeout(() => { S.msg = null; render(); }, 4000); }
@@ -53,7 +68,13 @@ async function login(pw) {
   });
   if (!S.loggedIn) S.pw = '';
 }
-async function loadResults() { await run('results', async () => { S.results = (await call('listResults')).results; }); }
+async function loadResults() { await run('results', async () => { S.results = numberTries((await call('listResults')).results); }); }
+// 같은 학생이 같은 시험(모듈)을 몇 번째로 냈는지 (a.try)
+function numberTries(list) {
+  const seen = {};
+  list.slice().sort((a, b) => a.finishedAt - b.finishedAt).forEach(a => { const k = [a.cls, nk(a.name), testLabel(a), modLabel(a)].join('|'); a.try = seen[k] = (seen[k] || 0) + 1; });
+  return list;
+}
 async function loadTests() { await run('tests', async () => { const j = await call('listTests'); S.tests = j.tests; }); }
 async function loadLc() { await run('lc', async () => { const j = await call('listLc'); S.lc = j.tests; S.lcAudio = j.audio; S.lcEx = j.ex || {}; }); }
 
@@ -72,32 +93,142 @@ function viewLogin() {
     <p class="hint">처음 비밀번호는 Apps Script 코드에 적힌 기본값이에요. 로그인한 뒤 설정 탭에서 꼭 바꿔 주세요.</p></form>`;
 }
 function tabs() {
-  const T = [['results', '결과'], ['settings', '설정'], ['tests', '문제']];
+  const T = [['students', '학생별'], ['homework', '회차별 확인'], ['hard', '많이 틀린 문항'], ['results', '전체 기록'], ['settings', '설정'], ['tests', '문제']];
   return `<div class="tabs">${T.map(([k, l]) => `<button class="tab${S.tab === k ? ' on' : ''}" data-act="tab" data-tab="${k}">${l}</button>`).join('')}</div>`;
 }
 
-function viewResults() {
-  if (!S.results) return `<div class="empty">${S.busy.results ? '불러오는 중…' : '기록을 불러오지 못했어요.'}</div>`;
-  const list = S.results.filter(inFilter);
-  const testIds = [...new Set(S.results.filter(a => !a.practice && !a.lc).map(a => a.testId))].sort((a, b) => a - b);
-  const hasWords = S.results.some(a => a.practice);
+// 학생별·회차별 확인·많이 틀린 문항·전체 기록 위에 함께 나오는 거르기 줄
+function filterBar(extra) {
+  const R = S.results;
+  const testIds = [...new Set(R.filter(a => !a.practice && !a.lc).map(a => a.testId))].sort((a, b) => a - b);
+  const hasWords = R.some(a => a.practice);
   // 기간은 기록에 있는 것만, 반은 고른 기간의 기록에 있는 것만 (괄호 안은 기록 수)
-  const periods = [...new Set(S.results.map(a => a.period).filter(Boolean))].sort().reverse();
-  const counts = {}; S.results.forEach(a => { if (a.cls && (!S.period || a.period === S.period)) counts[a.cls] = (counts[a.cls] || 0) + 1; });
+  const periods = [...new Set(R.map(a => a.period).filter(Boolean))].sort().reverse();
+  const counts = {}; R.forEach(a => { if (a.cls && (!S.period || a.period === S.period) && (!S.hideTest || !isTestName(a))) counts[a.cls] = (counts[a.cls] || 0) + 1; });
   const classes = Object.keys(counts).sort((a, b) => a.localeCompare(b, 'ko'));
-  const avg = list.length ? (list.reduce((n, a) => n + (a.total ? a.score / a.total : 0), 0) / list.length * 100).toFixed(0) + '%' : '-';
-  const people = new Set(list.map(a => a.name)).size;
-  const sel = S.results.find(a => a.id === S.sel);
-  return `<div class="stack">
+  const t = today(), chips = [['오늘', t, t], ['어제', addDays(t, -1), addDays(t, -1)], ['최근 7일', addDays(t, -6), t], ['전체 날짜', '', '']];
+  return `<div class="sheet filters">
     <div class="toolbar">
       <select id="period" aria-label="기간 선택"><option value="">전체 기간</option>${periods.map(p => `<option value="${esc(p)}"${S.period === p ? ' selected' : ''}>${esc(p)}</option>`).join('')}</select>
       <select id="cls" aria-label="반 선택"><option value="">전체 반</option>${classes.map(c => `<option value="${esc(c)}"${S.cls === c ? ' selected' : ''}>${esc(c)} (${counts[c]})</option>`).join('')}</select>
-      <select id="filter" aria-label="회차 선택"><option value="all">전체 회차</option>${S.results.some(a => a.lc) ? `<option value="lc"${S.filter === 'lc' ? ' selected' : ''}>리스닝</option>` : ''}${hasWords ? `<option value="words"${S.filter === 'words' ? ' selected' : ''}>빈칸 모아 풀기</option>` : ''}${testIds.map(id => `<option value="${id}"${S.filter === String(id) ? ' selected' : ''}>TEST ${id}</option>`).join('')}</select>
-      <span class="note">응시 <b class="num">${list.length}</b>회 · 학생 <b class="num">${people}</b>명 · 평균 정답률 <b class="num">${avg}</b></span>
-      <span class="spacer"></span>
-      <button class="btn small" data-act="csv"${list.length ? '' : ' disabled'}>CSV 복사</button>
-      <button class="btn small" data-act="reload"${S.busy.results ? ' disabled' : ''}>${S.busy.results ? '불러오는 중…' : '새로고침'}</button>
+      <select id="filter" aria-label="회차 선택"><option value="all">전체 회차</option>${R.some(a => a.lc) ? `<option value="lc"${S.filter === 'lc' ? ' selected' : ''}>리스닝</option>` : ''}${hasWords ? `<option value="words"${S.filter === 'words' ? ' selected' : ''}>빈칸 모아 풀기</option>` : ''}${testIds.map(id => `<option value="${id}"${S.filter === String(id) ? ' selected' : ''}>TEST ${id}</option>`).join('')}</select>
+      <input type="date" id="from" value="${S.from}" aria-label="시작 날짜"><span class="note">~</span><input type="date" id="to" value="${S.to}" aria-label="끝 날짜">
+      ${chips.map(([l, f, e]) => `<button class="dchip" data-act="dq" data-from="${f}" data-to="${e}" aria-pressed="${S.from === f && S.to === e}">${l}</button>`).join('')}
     </div>
+    <div class="toolbar">
+      <form id="sf" class="toolbar" style="gap:6px"><input type="text" id="q" value="${esc(S.q)}" placeholder="학생 이름" aria-label="학생 검색"><button class="btn small" type="submit">검색</button>${S.q ? '<button class="btn small" type="button" data-act="qclear">지우기</button>' : ''}</form>
+      <label class="check note"><input type="checkbox" id="hideTest" ${S.hideTest ? 'checked' : ''}> 테스트 기록 숨기기</label>
+      <span class="spacer"></span>${extra || ''}
+      <button class="btn small" data-act="reload"${S.busy.results ? ' disabled' : ''}>${S.busy.results ? '불러오는 중…' : '새로고침'}</button>
+    </div></div>`;
+}
+const noResults = () => `<div class="empty">${S.busy.results ? '불러오는 중…' : '기록을 불러오지 못했어요.'}</div>`;
+const tiles = items => `<div class="stats">${items.map(([l, v]) => `<div class="part"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join('')}</div>`;
+
+// 학생별: 반·이름으로 묶어 최근 14일, 푼 날, 응시 횟수, 평균, 최근 점수, 학습 시간. 이름을 누르면 날짜별 기록이 펼쳐진다.
+function students(list) {
+  const m = new Map();
+  list.forEach(a => { const k = a.cls + '|' + nk(a.name); if (!m.has(k)) m.set(k, { k, cls: a.cls, name: a.name.trim(), names: new Set(), runs: [] }); const s = m.get(k); s.names.add(a.name.trim()); s.runs.push(a); });
+  return [...m.values()].map(s => {
+    s.runs.sort((a, b) => b.finishedAt - a.finishedAt); s.n = s.runs.length; s.avg = Math.round(s.runs.reduce((n, a) => n + pct(a), 0) / s.n);
+    s.last = s.runs[0]; s.secs = s.runs.reduce((n, a) => n + secsOf(a), 0); s.days = new Set(s.runs.map(a => dkey(a.finishedAt))).size; return s;
+  }).sort((a, b) => a.cls.localeCompare(b.cls, 'ko') || a.name.localeCompare(b.name, 'ko'));
+}
+function viewStudents() {
+  if (!S.results) return noResults();
+  const list = S.results.filter(inFilter), st = students(list), cols = S.cls ? 8 : 9;
+  const avg = list.length ? Math.round(list.reduce((n, a) => n + pct(a), 0) / list.length) : 0;
+  return `<div class="stack">${filterBar()}
+    ${!st.length ? `<div class="tablebox"><div class="empty">이 조건에 맞는 기록이 없어요.</div></div>` : `
+    ${tiles([['학생', `${st.length}명`], ['응시', `${list.length}회`], ['평균 정답률', `${avg}%`], ['총 학습 시간', hm(list.reduce((n, a) => n + secsOf(a), 0))]])}
+    <div class="tablebox"><table><thead><tr>${S.cls ? '' : '<th>반</th>'}<th>이름</th><th>최근 14일</th><th>푼 날</th><th>응시</th><th>평균</th><th>최근 점수</th><th>마지막</th><th>학습 시간</th></tr></thead><tbody>
+      ${st.map(s => `<tr class="click${S.open === s.k ? ' sel' : ''}" data-act="stu" data-k="${esc(s.k)}" tabindex="0">${S.cls ? '' : `<td>${s.cls ? esc(s.cls) : '<span class="note">반 없음</span>'}</td>`}
+        <td style="white-space:nowrap"><b>${esc(s.name)}</b>${s.names.size > 1 ? ` <span class="note">(${[...s.names].map(esc).join(', ')})</span>` : ''}</td><td>${strip(s)}</td>
+        <td class="num">${s.days}일</td><td class="num">${s.n}회</td><td class="num">${pill(s.avg)}</td><td class="num">${pill(pct(s.last))}</td><td class="num">${fmtDate(s.last.finishedAt)}</td><td class="num">${hm(s.secs)}</td></tr>
+        ${S.open === s.k ? `<tr class="inside"><td colspan="${cols}">${studentDetail(s)}</td></tr>` : ''}`).join('')}
+    </tbody></table></div>
+    <p class="hint">이름을 누르면 그 학생의 기록이 날짜별로 열려요. 기록을 누르면 문항별 답안이 나와요. 「최근 14일」은 왼쪽이 오래된 날, 오른쪽이 오늘이에요 (연한 칸 1회, 진한 칸 2회 이상). 띄어쓰기만 다른 이름은 한 학생으로 묶었어요.</p>`}</div>`;
+}
+// 최근 14일 동안 날마다 몇 번 냈는지 작은 칸으로
+function strip(s) {
+  const t = today(), cnt = {}; s.runs.forEach(a => { const k = dkey(a.finishedAt); cnt[k] = (cnt[k] || 0) + 1; });
+  return `<span class="strip" aria-label="최근 14일 응시">${Array.from({ length: 14 }, (_, i) => { const k = addDays(t, i - 13), c = cnt[k] || 0; return `<i class="${c > 1 ? 'd2' : c ? 'd1' : ''}" title="${dlabel(k)} · ${c}회"></i>`; }).join('')}</span>`;
+}
+// 학생 한 명의 기록을 날짜별로. 처음에는 가장 최근 날만 펼친다.
+function studentDetail(s) {
+  const by = new Map(); s.runs.forEach(a => { const k = dkey(a.finishedAt); if (!by.has(k)) by.set(k, []); by.get(k).push(a); });
+  if (S.daysFor !== s.k) { S.days = new Set([...by.keys()].slice(0, 1)); S.daysFor = s.k; }
+  const hhmm = ms => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  return `<div class="tablebox"><table><thead><tr><th>날짜 · 시각</th><th>시험</th><th>모듈</th><th>점수</th><th>소요</th></tr></thead><tbody>
+    ${[...by].map(([d, rs]) => { const open = S.days.has(d), avg = Math.round(rs.reduce((n, a) => n + pct(a), 0) / rs.length);
+      return `<tr class="click day" data-act="day" data-d="${d}" tabindex="0" aria-expanded="${open}"><td colspan="5">${open ? '▾' : '▸'} <b>${dlabel(d)}</b> <span class="note">· ${rs.length}회 · 평균 ${avg}% · ${hm(rs.reduce((n, a) => n + secsOf(a), 0))}</span></td></tr>
+      ${open ? rs.map(a => `<tr class="click${S.sel === a.id ? ' sel' : ''}" data-act="sel" data-id="${esc(a.id)}" tabindex="0"><td class="num">${hhmm(a.finishedAt)}</td><td>${esc(testLabel(a))}</td><td>${modLabel(a)}</td>
+        <td class="num"><b>${a.score}/${a.total}</b> ${pill(pct(a))}${a.try > 1 ? ` <span class="note">${a.try}번째</span>` : ''}</td><td class="num">${esc(a.usedText)}</td></tr>
+        ${S.sel === a.id ? `<tr class="inside"><td colspan="5">${detail(a)}</td></tr>` : ''}`).join('') : ''}`; }).join('')}
+  </tbody></table></div>`;
+}
+
+// 회차별 확인: 반 하나의 학생 × 회차 표. 열은 지금 열린 회차와 이 반이 푼 회차. 칸에는 모듈별 최고 점수.
+function viewHomework() {
+  if (!S.results) return noResults();
+  const kindBar = `<div class="toolbar"><span class="note">시험</span>${[['rc', '리딩'], ['lc', '리스닝']].map(([k, l]) => `<button class="dchip" data-act="hwKind" data-k="${k}" aria-pressed="${S.hwKind === k}">${l}</button>`).join('')}</div>`;
+  if (!S.cls) return `<div class="stack">${filterBar()}<div class="tablebox"><div class="empty">위에서 반을 먼저 골라 주세요.</div></div></div>`;
+  const lc = S.hwKind === 'lc', list = S.results.filter(a => inFilter(a) && !a.practice && (lc ? !!a.lc : !a.lc)), st = students(list);
+  const colOf = a => (lc ? a.lc.id : String(a.testId));
+  const cols = new Map();
+  if (lc) (S.lc || []).filter(t => isOpen(t.no, t.set === 'new' ? 'lcNew' : 'lcTpo')).forEach(t => cols.set(t.id, t.title));
+  else (S.tests || []).filter(t => isOpen(t.id)).forEach(t => cols.set(String(t.id), `TEST ${t.id}`));
+  list.forEach(a => { if (!cols.has(colOf(a))) cols.set(colOf(a), lc ? a.lc.title : `TEST ${a.testId}`); });
+  const order = k => (lc ? [k.startsWith('new') ? 0 : 1, +k.split('-')[1] || 0] : [0, +k || 0]);
+  const keys = [...cols.keys()].sort((a, b) => order(a)[0] - order(b)[0] || order(a)[1] - order(b)[1]);
+  // 다 푼 회차: Module 1과 2를 모두 냈거나 1 + 2를 이어서 낸 것 (섹션만 골라 푼 기록은 세지 않는다)
+  const full = runs => { const m = new Set(runs.filter(a => !(a.secs && a.secs.length)).map(a => a.module)); return m.has(null) || (m.has(0) && m.has(1)); };
+  // 칸: 모듈(리스닝은 섹션만 푼 것도 따로)마다 최고 점수와 낸 횟수
+  const cell = runs => {
+    if (!runs.length) return '<span class="note">–</span>';
+    const g = new Map(); runs.forEach(a => { const k = modLabel(a) + (a.secs && a.secs.length ? ' 일부' : ''); if (!g.has(k)) g.set(k, []); g.get(k).push(a); });
+    return [...g].sort((a, b) => a[0].localeCompare(b[0])).map(([k, rs]) => `<div class="hwc"><span class="note">${esc(k)}</span>${pill(Math.max(...rs.map(pct)))}${rs.length > 1 ? `<span class="note">×${rs.length}</span>` : ''}</div>`).join('');
+  };
+  return `<div class="stack">${filterBar()}${kindBar}
+    ${!keys.length ? `<div class="tablebox"><div class="empty">열린 회차도, 이 반이 푼 기록도 없어요.</div></div>`
+      : !st.length ? `<div class="tablebox"><div class="empty">이 반은 이 조건에서 ${lc ? '리스닝' : '리딩'} 기록이 없어요.</div></div>` : `
+    <div class="tablebox"><table class="hw"><thead><tr><th>이름</th><th>진행</th>${keys.map(k => `<th>${esc(cols.get(k))}</th>`).join('')}</tr></thead><tbody>
+      ${st.map(s => { const by = keys.map(k => s.runs.filter(a => colOf(a) === k)), done = by.filter(full).length, started = by.filter(r => r.length).length;
+        return `<tr><td style="white-space:nowrap"><b>${esc(s.name)}</b></td><td>${done === keys.length ? '<span class="pill p-good">완료</span>' : started ? `<span class="pill p-mid">${done}/${keys.length}</span>` : '<span class="pill p-bad">안 함</span>'}</td>
+          ${by.map(r => `<td>${cell(r)}</td>`).join('')}</tr>`; }).join('')}
+    </tbody></table></div>
+    <p class="hint">「진행」은 Module 1과 2를 모두 낸 회차 수예요. 칸에는 모듈마다 최고 점수가 나오고, 여러 번 냈으면 ×횟수가 붙어요. 「전체」는 Module 1 + 2를 이어서 푼 기록, 「일부」는 섹션만 골라 푼 기록이에요. 열은 지금 열린 회차와 이 반이 푼 회차예요. 이 조건에서 한 번이라도 기록이 있는 학생만 나와요.</p>`}</div>`;
+}
+
+// 많이 틀린 문항: 지금 조건의 기록에서 정답률이 낮은 문항 30개 (두 번 이상 풀린 문항만)
+function viewHard() {
+  if (!S.results) return noResults();
+  const m = new Map();
+  S.results.filter(inFilter).forEach(a => (a.rows || []).forEach(x => {
+    const test = a.lc ? '리스닝 ' + a.lc.title : `TEST ${x.t != null ? x.t : a.testId}`, k = [test, x.mi, x.n, x.kind].join('|');
+    if (!m.has(k)) m.set(k, { test, x, tries: 0, ok: 0, wrong: {} });
+    const o = m.get(k); o.tries++; if (x.ok) o.ok++; else { const g = x.given || '(빈칸)'; o.wrong[g] = (o.wrong[g] || 0) + 1; }
+  }));
+  const list = [...m.values()].filter(o => o.tries >= 2).map(o => Object.assign(o, { rate: Math.round(o.ok / o.tries * 100) })).sort((a, b) => a.rate - b.rate || b.tries - a.tries).slice(0, 30);
+  return `<div class="stack">${filterBar()}
+    ${list.length ? `<div class="tablebox"><table><thead><tr><th>정답률</th><th>푼 횟수</th><th>시험</th><th>문항</th><th>유형</th><th>정답</th><th>많이 쓴 오답</th></tr></thead><tbody>
+      ${list.map(o => { const x = o.x, wrong = Object.entries(o.wrong).sort((a, b) => b[1] - a[1]).slice(0, 3);
+        return `<tr><td class="num">${pill(o.rate)}</td><td class="num">${o.tries}회</td><td>${esc(o.test)}</td><td class="num">M${x.mi + 1}-${x.n}</td><td>${x.kind === 'w' ? '단어' : x.kind === 'l' ? LC_TYPE[x.type] || '리스닝' : '리딩'}</td>
+          <td>${x.correct == null ? '<span class="note">정답 공개 꺼짐</span>' : x.kind === 'w' ? `${esc(x.correct)} <span class="note">(${esc(x.full)})</span>` : esc(x.correct)}</td>
+          <td>${wrong.map(([g, n]) => `${esc(g)} <span class="note">${n}회</span>`).join(', ')}</td></tr>`; }).join('')}
+    </tbody></table></div><p class="hint">지금 고른 기간·반·회차·날짜에서 정답률이 낮은 문항 30개예요. 두 번 이상 풀린 문항만 넣었어요.</p>`
+    : `<div class="tablebox"><div class="empty">이 조건에서 두 번 이상 풀린 문항이 아직 없어요.</div></div>`}</div>`;
+}
+
+function viewResults() {
+  if (!S.results) return noResults();
+  const list = S.results.filter(inFilter);
+  const avg = list.length ? (list.reduce((n, a) => n + (a.total ? a.score / a.total : 0), 0) / list.length * 100).toFixed(0) + '%' : '-';
+  const people = new Set(list.map(a => a.cls + '|' + nk(a.name))).size;
+  const sel = S.results.find(a => a.id === S.sel);
+  return `<div class="stack">
+    ${filterBar(`<button class="btn small" data-act="csv"${list.length ? '' : ' disabled'}>CSV 복사</button>`)}
+    <p class="note" style="margin:0">응시 <b class="num">${list.length}</b>회 · 학생 <b class="num">${people}</b>명 · 평균 정답률 <b class="num">${avg}</b></p>
     <div class="tablebox">${list.length ? `<table><thead><tr><th>반</th><th>이름</th><th>시험</th><th>모듈</th><th>제출 시각</th><th>점수</th><th>M1 단어</th><th>M1 리딩</th><th>M2 단어</th><th>M2 리딩</th><th>소요</th><th></th></tr></thead><tbody>
       ${list.map(a => `<tr class="click${a.id === S.sel ? ' sel' : ''}" data-act="sel" data-id="${esc(a.id)}" tabindex="0">
         <td>${a.cls ? esc(a.cls) : '<span class="note">-</span>'}</td><td>${esc(a.name || '이름 없음')}</td><td>${esc(testLabel(a))}</td><td>${modLabel(a)}</td><td class="num">${fmtDate(a.finishedAt)}</td><td class="num"><b>${a.score}/${a.total}</b></td>
@@ -253,7 +384,7 @@ function render() {
   let body;
   if (!S.loggedIn) body = viewLogin();
   else body = tabs() + (S.msg ? `<div class="banner ${S.msg.kind}" style="margin-bottom:14px">${esc(S.msg.text)}</div>` : '') +
-    (S.tab === 'results' ? viewResults() : S.tab === 'settings' ? viewSettings() : viewTests());
+    ({ students: viewStudents, homework: viewHomework, hard: viewHard, results: viewResults, settings: viewSettings, tests: viewTests }[S.tab] || viewStudents)();
   app.innerHTML = topBar() + `<main class="wrap">${body}</main>` + viewConfirm();
   if (active) { const el = document.getElementById(active); if (el) el.focus(); }
 }
@@ -263,6 +394,7 @@ document.addEventListener('submit', ev => {
   ev.preventDefault();
   const f = ev.target;
   if (f.id === 'login') login(f.querySelector('#pw').value.trim());
+  else if (f.id === 'sf') { S.q = f.querySelector('#q').value.trim(); S.open = S.sel = null; render(); }
   else if (f.id === 'settingsForm') run('settings', async () => {
     const j = await call('saveSettings', { settings: { code: f.querySelector('#code').value, open: f.querySelector('#open').value, showAnswers: f.querySelector('#showAnswers').checked,
       lcNew: f.querySelector('#lcNew').value, lcTpo: f.querySelector('#lcTpo').value } });
@@ -277,7 +409,12 @@ document.addEventListener('submit', ev => {
 document.addEventListener('click', ev => {
   const b = ev.target.closest('[data-act]'); if (!b) return;
   const act = b.dataset.act;
-  if (act === 'tab') { S.tab = b.dataset.tab; S.msg = null; render(); }
+  if (act === 'tab') { S.tab = b.dataset.tab; ssSet('tab', S.tab); S.msg = null; render(); }
+  else if (act === 'stu') { S.open = S.open === b.dataset.k ? null : b.dataset.k; S.sel = null; render(); }
+  else if (act === 'day') { const d = b.dataset.d; S.days.has(d) ? S.days.delete(d) : S.days.add(d); render(); }
+  else if (act === 'dq') { S.from = b.dataset.from; S.to = b.dataset.to; S.open = S.sel = null; render(); }
+  else if (act === 'qclear') { S.q = ''; S.open = S.sel = null; render(); }
+  else if (act === 'hwKind') { S.hwKind = b.dataset.k; render(); }
   else if (act === 'logout') { S.loggedIn = false; S.pw = ''; ssSet('pw', null); S.results = S.tests = S.lc = null; render(); }
   else if (act === 'delLcAsk') { const id = b.dataset.id, t = (S.lc || []).find(x => x.id === id);
     S.confirm = { title: `리스닝 ${t ? t.title : id}을 지울까요?`, text: '문제가 시트에서 지워져요. 드라이브 음원과 이미 제출된 결과는 그대로 남아요.', label: '지우기', fn: () => run('delLc', async () => { const j = await call('deleteLc', { id }); S.lc = j.tests; S.lcEx = j.ex || {}; flash('ok', '지웠어요.'); }) }; render(); }
@@ -317,13 +454,16 @@ document.addEventListener('click', ev => {
     navigator.clipboard.writeText(csv).then(() => flash('ok', `${list.length}줄을 복사했어요. 엑셀이나 시트에 붙여 넣으세요.`), () => flash('bad', '복사하지 못했어요. 구글 시트의 결과 탭을 직접 열어 주세요.'));
   }
 });
-document.addEventListener('keydown', ev => { if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches('tr[data-act="sel"]')) { ev.preventDefault(); ev.target.click(); } });
+document.addEventListener('keydown', ev => { if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches('tr[data-act="sel"], tr[data-act="stu"], tr[data-act="day"]')) { ev.preventDefault(); ev.target.click(); } });
 document.addEventListener('change', ev => {
   const el = ev.target;
   if (el.id === 'auAll') { S.auAll = el.checked; render(); }
-  else if (el.id === 'filter') { S.filter = el.value; S.sel = null; render(); }
-  else if (el.id === 'period') { S.period = el.value; S.cls = ''; S.sel = null; render(); }
-  else if (el.id === 'cls') { S.cls = el.value; S.sel = null; render(); }
+  else if (el.id === 'filter') { S.filter = el.value; S.open = S.sel = null; render(); }
+  else if (el.id === 'period') { S.period = el.value; S.cls = ''; S.open = S.sel = null; render(); }
+  else if (el.id === 'cls') { S.cls = el.value; S.open = S.sel = null; render(); }
+  else if (el.id === 'from') { S.from = el.value; if (S.to && S.from > S.to) S.to = S.from; S.open = S.sel = null; render(); }
+  else if (el.id === 'to') { S.to = el.value; if (S.from && S.to < S.from) S.from = S.to; S.open = S.sel = null; render(); }
+  else if (el.id === 'hideTest') { S.hideTest = el.checked; S.open = S.sel = null; render(); }
   else if (el.id === 'onlyWrong') { S.onlyWrong = el.checked; render(); }
 });
 
