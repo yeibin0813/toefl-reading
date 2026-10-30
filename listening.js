@@ -364,7 +364,7 @@ function lcResumeExits(e) {
 // 다시 볼 때 쓰는 음원 (시험용 LC와 따로 둔다). '음원 불러오기'를 누르면 그 모듈 묶음을 받고, 문항 묶음마다 마음대로 다시 들을 수 있다.
 // 화면에 <audio>를 두지 않고 재생기 하나(au)를 버튼과 막대로 튼다. 브라우저 재생기에 있는 '다운로드' 메뉴로 파일을 저장하지 못하게 하려는 것이다.
 // tok: 불러오기마다 새로 만든다. 늦게 끝난 예전 불러오기가 지금 것을 덮지 않게 한다. cur: 재생기에 걸린 음원 이름
-const LCR = { key: '', clips: null, loading: false, err: '', tok: null, au: null, cur: null, drag: null, open: new Set() };
+const LCR = { key: '', clips: null, loading: false, err: '', tok: null, au: null, cur: null, drag: null };
 function rvRelease() {
   if (LCR.au) { try { LCR.au.pause(); LCR.au.removeAttribute('src'); LCR.au.load(); } catch (e) {} }
   if (LCR.clips) Object.values(LCR.clips).forEach(u => URL.revokeObjectURL(u));
@@ -412,9 +412,6 @@ function rvSync() {
   if (LCR.au && LCR.cur && !document.querySelector(`.rvplay[data-clip="${CSS.escape(LCR.cur)}"]`)) LCR.au.pause();
   rvTick();
 }
-// 기록이 다루는 모듈들 (Module 1 + 2 이어 풀기 기록은 module이 null이고, 채점된 문항이 있는 모듈만)
-const rvMods = (r, t) => { if (r.module != null) return [r.module];
-  const ms = [...new Set(r.rows.map(x => x.mi))].filter(i => i === 0 || i === 1).sort(); return ms.length ? ms : t.modules.map((m, i) => i); };
 // 음원 이름은 "모듈:이름"으로 둔다 (모듈 두 개를 받아도 이름이 겹치지 않게)
 async function rvAudioLoad() {
   const V = S.review; if (!V || !V.r || !V.r.lc || !V.content) return;
@@ -435,51 +432,20 @@ async function rvAudioLoad() {
   LCR.loading = false;
   if (S.screen === 'review') render();
 }
-// 스크립트를 말차례(대화)·한두 문장씩 영어와 해석으로. 문항의 근거 문장(ev) 앞에 ⟨문항-정답⟩ 표시를 붙인다.
-function rvLines(lines, qs) {
-  const fold = s => String(s).replace(/[’‘]/g, "'").replace(/[“”]/g, '"').replace(/\u2028/g, ' ');
-  const marks = lines.map(() => []);
-  qs.forEach(([q, e, x]) => {
-    if (!e || !e.ev || !x) return;
-    for (const probe of [fold(e.ev), fold(e.ev).slice(0, 30)]) {
-      const li = lines.findIndex(l => fold(l.en).includes(probe));
-      if (li >= 0) { marks[li].push({ at: fold(lines[li].en).indexOf(probe), len: probe.length, tag: `${q.n}-${x.correct || '?'}` }); return; }
-    }
-  });
-  return `<div class="rvlines">${lines.map((l, li) => {
-    let en = '', pos = 0;
-    marks[li].sort((a, b) => a.at - b.at).forEach(m => { if (m.at < pos) return; en += esc(l.en.slice(pos, m.at)) + `<span class="evmark">⟨${esc(m.tag)}⟩</span><span class="evd">${esc(l.en.slice(m.at, m.at + m.len))}</span>`; pos = m.at + m.len; });
-    en += esc(l.en.slice(pos));
-    return `<div class="ln"><span class="sp">${l.sp === 'M' ? '남' : l.sp === 'W' ? '여' : ''}</span><div><p class="en">${en}</p><p class="ko">${esc(l.ko)}</p></div></div>`;
-  }).join('')}</div>`;
-}
-// 리스닝 다시 보기: 모듈마다 문항 묶음별로 음원(불러왔으면)과 문제
+// 리스닝 다시 보기: 음원 불러오기 막대와, 문항 묶음마다 재생기(불러왔으면)를 붙인 문제
 function lcReviewBody(V) {
-  // ex: 정답 공개일 때 서버가 보내는 해설 { i: { "모듈:첫 문항": { s: 원문, l: [{ sp, en, ko }] } }, q: { "모듈-문항": { qk, type, ok, ul, ev, exp } } }
-  const r = V.r, t = V.content.test, mods = rvMods(r, t), by = rowMap(r.rows), ex = V.content.extra || { i: {}, q: {} };
+  const r = V.r, t = V.content.test, mods = rvMods(r, t);
   if (!mods.length || mods.some(mi => !t.modules[mi])) return '';
   const key = r.lc.id + '_m' + mods.join(''), mine = LCR.key === key;
   const mb = lcMB(mods.reduce((n, mi) => n + ((t.packs || [])[mi] || 0), 0));
   const bar = mine && LCR.clips ? '' : mine && LCR.loading ? `<div class="banner">음원을 불러오는 중이에요… (약 ${mb}MB)</div>`
     : `<div class="toolbar"><button class="btn" data-act="rvAudio">음원 불러오기 · 약 ${mb}MB</button><span class="note">불러오면 이 화면에서 문항 묶음마다 다시 들을 수 있어요.</span></div>
        ${mine && LCR.err ? `<div class="banner bad">${esc(LCR.err)}</div>` : ''}`;
-  const body = mods.map(mi => {
-    const items = t.modules[mi].items.map(it => {
-      it.questions.forEach(q => { const x = by[mi + '-' + q.n]; if (x) V.seen.add(x.k); });
-      const qs = it.questions.filter(q => { const x = by[mi + '-' + q.n]; return x && (!V.onlyWrong || !x.ok); });
-      if (!qs.length) return '';
-      const clip = mi + ':' + it.clip, s = mine && LCR.clips && LCR.clips[clip] ? rvState(clip) : null, ix = ex.i[mi + ':' + it.from] || {}, sk = r.id + '|' + mi + ':' + it.from;
-      const player = s ? `<div class="rvplay" data-clip="${esc(clip)}"><button class="btn small" data-act="rvPlay" data-clip="${esc(clip)}">${s.label}</button>
+  const body = lcReviewItems(V, (mi, it) => {
+    const clip = mi + ':' + it.clip, s = mine && LCR.clips && LCR.clips[clip] ? rvState(clip) : null;
+    return s ? `<div class="rvplay" data-clip="${esc(clip)}"><button class="btn small" data-act="rvPlay" data-clip="${esc(clip)}">${s.label}</button>
         <input type="range" min="0" max="${s.max}" step="1" value="${s.value}" data-rvseek="${esc(clip)}" aria-label="${esc(it.heading)} 재생 위치" aria-valuetext="${s.text}"><span class="t num">${s.text}</span></div>` : '';
-      return `<section class="stack rvitem"><div class="qhead" style="margin:0"><h3>${esc(it.heading)}</h3><span class="note num">${LC_TYPE[it.type] || ''} · ${it.from === it.to ? `Question ${it.from}` : `Questions ${it.from}–${it.to}`}</span></div>
-        ${player}
-        ${it.type === 'response' || !(ix.l || ix.s) ? '' : `<details class="rvscript" data-sk="${esc(sk)}"${LCR.open.has(sk) ? ' open' : ''}>${ix.l
-          ? `<summary>스크립트 · 해석 보기</summary>${rvLines(ix.l, it.questions.map(q => [q, ex.q[mi + '-' + q.n], by[mi + '-' + q.n]]))}`
-          : `<summary>스크립트 보기</summary><p class="rvplain">${esc(ix.s)}</p>`}</details>`}
-        ${qs.map(q => rvChoice(q.n, q.q || (it.type === 'response' && ix.s ? ix.s : '가장 알맞은 응답을 고르세요.'), q.c, by[mi + '-' + q.n], '', ex.q[mi + '-' + q.n])).join('')}</section>`;
-    }).join('');
-    return items && mods.length > 1 ? `<h3 class="rvmod">${esc(t.modules[mi].name)}</h3>${items}` : items;
-  }).join('');
+  });
   return body ? bar + body : '';
 }
 
@@ -501,8 +467,6 @@ document.addEventListener('click', ev => {
   else if (act === 'rvAudio') rvAudioLoad();
   else if (act === 'rvPlay') rvToggle(b.dataset.clip);
 });
-// 펼친 스크립트는 화면을 다시 그려도 펼친 채로 둔다 (toggle은 버블링되지 않아서 capture로 받는다)
-document.addEventListener('toggle', ev => { const d = ev.target; if (d.dataset && d.dataset.sk) LCR.open[d.open ? 'add' : 'delete'](d.dataset.sk); }, true);
 document.addEventListener('change', ev => {
   const el = ev.target;
   if (el.type === 'checkbox' && el.dataset.lcsec != null && S.lcPick) {

@@ -15,6 +15,7 @@
 <script src="https://yeibin0813.github.io/dictation/classes.js"></script>
 <script src="config.js"></script>
 <script src="api.js"></script>
+<script src="review.js"></script>
 <script src="listening.js"></script>
 <script>
 const LS = 'toefl-rq2';
@@ -22,7 +23,6 @@ const lsGet = k => { try { return JSON.parse(localStorage.getItem(LS + k)); } ca
 const lsSet = (k, v) => { try { v == null ? localStorage.removeItem(LS + k) : localStorage.setItem(LS + k, JSON.stringify(v)); } catch (e) {} };
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const LET = ['A', 'B', 'C', 'D'];
-const BLANK = /\[(\d+)\]/g;
 const PART_LABEL = { '0w': 'M1 Complete the Words', '0r': 'M1 Reading', '1w': 'M2 Complete the Words', '1r': 'M2 Reading', w: 'Complete the Words' };
 
 // S.pick: { test(정답 없음), showAnswers } — 회차를 고른 뒤 모듈과 제한 시간을 고르는 화면
@@ -66,7 +66,6 @@ const recTitle = r => (r.practice ? `빈칸 TEST ${span(r.practice)}` : r.lc ? `
   : r.testId != null ? `TEST ${esc(r.testId)} · ${modName(r.module)}` : esc(r.label || '기록'));
 const rowLabel = x => (x.t != null ? `T${x.t} ` : '') + `M${x.mi + 1}-${x.n}`;
 
-function blanksOf(set) { const out = []; let i = 0; set.text.replace(BLANK, (a, len) => { out.push({ n: set.start + i++, len: +len }); return a; }); return out; }
 const keyPre = (mi, set) => (set.kp != null ? set.kp : mi);
 function keysOfSet(mi, set) { return set.type === 'words' ? blanksOf(set).map(b => keyPre(mi, set) + '-' + b.n) : set.questions.map(q => mi + '-' + q.n); }
 function rangeOf(set) { const ns = set.type === 'words' ? blanksOf(set).map(b => b.n) : set.questions.map(q => q.n); return (set.t != null ? `T${set.t} ` : '') + (ns.length > 1 ? `${ns[0]}–${ns[ns.length - 1]}` : `${ns[0]}`); }
@@ -414,7 +413,6 @@ function closeReview() {
   const row = home && V.id && document.querySelector(`[data-act="review"][data-id="${CSS.escape(V.id)}"]`);
   if (row) row.scrollIntoView({ block: 'center' }); else window.scrollTo(0, 0);
 }
-const rowMap = rows => { const by = {}; rows.forEach(x => { by[x.k] = x; }); return by; };
 function viewReview() {
   const V = S.review, back = `<button class="btn" data-act="reviewBack">${V.back === 'result' ? '결과로 돌아가기' : '기록 목록으로'}</button>`;
   if (V.status === 'loading') return `<div class="sheet stack" style="max-width:520px"><h2>기록을 불러오는 중…</h2><div>${back}</div></div>`;
@@ -435,72 +433,6 @@ function viewReview() {
     <div class="toolbar"><label class="check note"><input type="checkbox" id="rvOnlyWrong"${V.onlyWrong ? ' checked' : ''}> 틀린 문항만 보기</label><span class="spacer"></span>${back}</div>
     ${none || body + table}
     <div class="toolbar"><span class="spacer"></span>${back}</div></div>`;
-}
-// 리딩: 모듈마다 지문 순서대로
-function rcReviewBody(V) {
-  const r = V.r, by = rowMap(r.rows);
-  return V.content.test.modules.map((m, mi) => {
-    if (r.module != null && mi !== r.module) return '';
-    const html = m.sets.map(s => (s.type === 'words' ? rvWords(s, mi, by, V, '') : rvRead(s, mi, by, V))).join('');
-    return html ? `<section class="stack"><h3 class="rvmod">${esc(m.name)}</h3>${html}</section>` : '';
-  }).join('');
-}
-// 빈칸 모아 풀기: 회차·모듈마다 빈칸 지문
-function wordsReviewBody(V) {
-  const by = rowMap(V.r.rows);
-  return V.content.sets.map(s => rvWords(s, s.t + '-' + s.mi, by, V, `TEST ${esc(s.t)} · Module ${s.mi + 1}`)).join('');
-}
-// 빈칸 지문 하나: 낸 글자를 채워 넣고, 틀린 칸은 정답(정답 공개일 때)을 옆에 붙인다. kp는 답 키 앞부분 ("0" 또는 "7-0")
-function rvWords(set, kp, by, V, title) {
-  const bl = blanksOf(set), xs = bl.map(b => by[kp + '-' + b.n]);
-  xs.forEach(x => x && V.seen.add(x.k));
-  if (!xs.some(Boolean) || (V.onlyWrong && !xs.some(x => x && !x.ok))) return '';
-  let i = 0;
-  const html = esc(set.text).replace(/(\S*?)\[(\d+)\]/g, (a, pre, len) => {
-    const b = bl[i++], x = by[kp + '-' + b.n], gap = '_'.repeat(+len);
-    if (!x) return `<span class="wd">${pre}<span class="rvb">${gap}</span></span>`;
-    const fix = !x.ok && x.correct ? `<span class="rvb fix">${esc(x.correct)}</span>` : '';
-    return `<span class="wd">${pre}<span class="rvb ${x.ok ? 'ok' : x.given ? 'bad' : 'bad none'}">${x.given ? esc(x.given) : gap}</span>${fix}<span class="sr"> (${b.n}번 ${x.ok ? '맞음' : '틀림'}${fix ? ', 정답 ' + esc(x.correct) : ''})</span></span>`;
-  });
-  return `<div class="sheet words rvwords">${title ? `<div class="eyebrow">${title}</div>` : ''}${html}</div>`;
-}
-// 리딩 지문 하나와 그 문제들. 문장 넣기 문제가 있으면 지문의 ■ 자리에 A~D를 붙이고, 내가 고른 자리와 정답 자리를 칠한다.
-function rvRead(set, mi, by, V) {
-  set.questions.forEach(q => { const x = by[mi + '-' + q.n]; if (x) V.seen.add(x.k); });
-  const qs = set.questions.filter(q => { const x = by[mi + '-' + q.n]; return x && (!V.onlyWrong || !x.ok); });
-  if (!qs.length) return '';
-  const ins = set.questions.find(q => q.insert), ix = ins && by[mi + '-' + ins.n];
-  let i = 0;
-  const mark = () => { const L = LET[i++] || '', c = ix ? (ix.given === L ? (ix.ok ? ' mine' : ' mine bad') : '') + (ix.correct === L ? ' right' : '') : '';
-    return `<span class="insmark${c}">■ ${L}</span>`; };
-  const passage = set.passage.split(/\n\n/).map(p => {
-    const h = esc(p).replace(/\n/g, '<br>');
-    return `<p>${ins ? h.replace(/■/g, mark) : h.replace(/ ?■ ?/g, ' ').replace(/ {2,}/g, ' ').trim()}</p>`;
-  }).join('');
-  const cards = qs.map(q => rvChoice(q.n, q.insert ? '다음 문장이 들어갈 가장 알맞은 위치를 고르세요.' : q.q, q.insert ? LET.map(L => `위치 ■ ${L}`) : q.c,
-    by[mi + '-' + q.n], q.insert ? `<div class="insert-sent">${esc(q.insert)}</div>` : '')).join('');
-  return `<div class="split rvsplit"><div class="sheet passage">${set.kind ? `<div class="eyebrow">${esc(set.kind)}</div>` : ''}${set.title ? `<h3>${esc(set.title)}</h3>` : ''}${passage}</div>
-    <div class="stack">${cards}</div></div>`;
-}
-// 객관식 한 문제: 내 답과 정답(정답 공개일 때만 x.correct가 있다)을 표시한다
-// ex: 리스닝 해설 { qk 질문 해석, type 문항 유형, ok 보기 해석, ul 보기별 함정 표현, exp 해설 } (정답 공개일 때만 서버가 보낸다)
-function rvChoice(n, text, choices, x, extra, ex) {
-  ex = ex || {};
-  return `<div class="sheet rvq${x.ok ? '' : ' wrong'}"><div class="rvqh"><span class="mark ${x.ok ? 'ok' : 'bad'}">${x.ok ? 'O' : 'X'}<span class="sr">${x.ok ? ' 맞음' : ' 틀림'}</span></span>
-    <span><span class="num">${n}.</span> ${esc(text)}${ex.qk ? `<span class="ko">${esc(ex.qk)}</span>` : ''}</span></div>${extra || ''}
-    <div class="opts">${choices.map((c, ci) => { const L = LET[ci], mine = x.given === L, right = x.correct === L, ko = ex.ok && ex.ok[ci];
-      return `<div class="opt rv${mine ? (x.ok ? ' mine' : ' mine bad') : ''}${right ? ' right' : ''}"><b>(${L})</b><span>${trapText(c, ex.ul && ex.ul[ci])}${ko ? `<span class="ko">${esc(ko)}</span>` : ''}</span>${mine ? '<span class="tag">내 답</span>' : ''}${right ? '<span class="tag ok">정답</span>' : ''}</div>`; }).join('')}</div>
-    ${x.given ? '' : '<div class="note">답을 고르지 않았어요.</div>'}${ex.exp ? `<div class="rvx"><b>해설</b>${ex.type ? `<span class="rvtype">${esc(ex.type)}</span>` : ''}<p>${rvExp(ex.exp)}</p></div>` : ''}</div>`;
-}
-// 해설 본문: **굵게**, 줄 첫머리의 "(A) 언급 없음." "(B) 정답." 같은 꼬리표와 "Paraphrasing:"은 굵게
-const rvExp = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/^(\([A-D]\) [^.\n]{1,20}\.|Paraphrasing:)/gm, '<b class="tagl">$1</b>');
-// 보기에서 오답 함정 표현(phrases)에 밑줄. 원문 위치로 표시한 뒤 한 글자씩 이스케이프해서 태그가 겹치지 않게 한다.
-function trapText(text, phrases) {
-  const low = String(text).toLowerCase(), on = new Array(low.length).fill(false);
-  (phrases || []).forEach(p => { p = String(p || ''); const i = p ? low.indexOf(p.toLowerCase()) : -1; for (let k = i; i >= 0 && k < i + p.length; k++) on[k] = true; });
-  let out = '', u = false;
-  for (let k = 0; k < low.length; k++) { if (on[k] !== u) { out += on[k] ? '<u class="trap">' : '</u>'; u = on[k]; } out += esc(text[k]); }
-  return out + (u ? '</u>' : '');
 }
 function viewModal() {
   const md = S.modal; if (!md) return '';

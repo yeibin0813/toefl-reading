@@ -13,10 +13,13 @@
 <div id="app"></div>
 <script src="config.js"></script>
 <script src="api.js"></script>
+<script src="review.js"></script>
 <script>
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const ssGet = k => { try { return sessionStorage.getItem('toefl-admin:' + k); } catch (e) { return null; } };
 const ssSet = (k, v) => { try { v == null ? sessionStorage.removeItem('toefl-admin:' + k) : sessionStorage.setItem('toefl-admin:' + k, v); } catch (e) {} };
+const LET = ['A', 'B', 'C', 'D'];
+RV_MINE = '학생 답';
 const PART_LABEL = { '0w': 'M1 단어', '0r': 'M1 리딩', '1w': 'M2 단어', '1r': 'M2 리딩', resp: 'Best Response', conv: 'Conversation', ann: 'Announcement', talk: 'Academic Talk' };
 const LC_TYPE = { response: 'Best Response', conversation: 'Conversation', announcement: 'Announcement', talk: 'Academic Talk' };
 const modName = mi => (mi === 0 || mi === 1 ? `M${mi + 1}` : '전체');
@@ -49,7 +52,7 @@ const fmtTime = s => { s = Math.max(0, Math.round(s || 0)); return String(Math.f
 // open: 학생별 탭에서 펼친 학생, days: 그 학생의 펼친 날짜들, hwKind: 회차별 확인에서 볼 시험 종류 (rc 리딩, lc 리스닝)
 const S = { pw: ssGet('pw') || '', loggedIn: false, tab: ssGet('tab') || 'students', busy: {}, msg: null, settings: null, file: null, lcFile: null,
   results: null, period: '', cls: '', filter: 'all', from: '', to: '', q: '', hideTest: true, sel: null, open: null, days: null, daysFor: null, hwKind: 'rc',
-  onlyWrong: true, tests: null, confirm: null };
+  onlyWrong: true, rvMode: 'screen', rv: {}, tests: null, confirm: null };
 
 const call = (action, body) => api(action, Object.assign({ pw: S.pw }, body || {}));
 // 오류·경고는 놓치지 않게 더 오래 둔다
@@ -238,16 +241,41 @@ function viewResults() {
       </tbody></table>` : `<div class="empty">아직 제출된 기록이 없어요. 학생이 시험을 끝내면 여기에 나타나요.</div>`}</div>
     ${sel ? detail(sel) : ''}</div>`;
 }
+// 기록 하나의 답안: 문제 화면(학생 다시 보기와 같은 모양, 기본) 또는 표
 function detail(a) {
   if (!a.rows) return `<div class="banner">이 기록에는 문항별 답안이 없어요.</div>`;
-  const rows = a.rows.filter(x => !S.onlyWrong || !x.ok);
   return `<section class="stack">
-    <div class="qhead"><h2>${a.cls ? esc(a.cls) + ' · ' : ''}${esc(a.name)} · ${esc(testLabel(a))} ${a.practice ? '' : modName(a.module) + ' '}답안</h2><label class="check note"><input type="checkbox" id="onlyWrong" ${S.onlyWrong ? 'checked' : ''}> 틀린 문항만 보기</label></div>
+    <div class="qhead"><h2>${a.cls ? esc(a.cls) + ' · ' : ''}${esc(a.name)} · ${esc(testLabel(a))} ${a.practice ? '' : modName(a.module) + ' '}답안</h2>
+      <div class="toolbar"><label class="check note"><input type="checkbox" id="onlyWrong" ${S.onlyWrong ? 'checked' : ''}> 틀린 문항만 보기</label>
+        ${[['screen', '문제 화면'], ['table', '표']].map(([k, l]) => `<button class="dchip" data-act="rvMode" data-k="${k}" aria-pressed="${S.rvMode === k}">${l}</button>`).join('')}</div></div>
     <div class="stats">${['0w', '0r', '1w', '1r', 'resp', 'conv', 'ann', 'talk'].filter(k => a.parts[k]).map(k => `<div class="part"><div class="lbl">${PART_LABEL[k]}</div><div class="val">${esc(Array.isArray(a.parts[k]) ? a.parts[k].join('/') : a.parts[k])}</div></div>`).join('')}</div>
-    <div class="tablebox">${rows.length ? `<table><thead><tr><th>문항</th><th>유형</th><th></th><th>학생 답</th><th>정답</th></tr></thead><tbody>
+    ${S.rvMode === 'screen' ? recordScreen(a) : answerTable(a.rows)}</section>`;
+}
+function answerTable(list) {
+  const rows = list.filter(x => !S.onlyWrong || !x.ok);
+  return `<div class="tablebox">${rows.length ? `<table><thead><tr><th>문항</th><th>유형</th><th></th><th>학생 답</th><th>정답</th></tr></thead><tbody>
       ${rows.map(x => `<tr class="${x.ok ? '' : 'badrow'}"><td class="num">${rowLabel(x)}</td><td>${x.kind === 'w' ? '단어' : x.kind === 'l' ? LC_TYPE[x.type] || '리스닝' : '리딩'}</td><td class="mark ${x.ok ? 'ok' : 'bad'}">${x.ok ? 'O' : 'X'}</td>
         <td class="given ${x.ok ? '' : (x.given ? 'bad' : 'empty')}">${x.given ? esc(x.given) : '(빈칸)'}</td><td>${x.kind === 'w' ? `${esc(x.correct)} <span class="note">(${esc(x.full)})</span>` : esc(x.correct)}</td></tr>`).join('')}
-      </tbody></table>` : `<div class="empty">틀린 문항이 없어요.</div>`}</div></section>`;
+      </tbody></table>` : `<div class="empty">틀린 문항이 없어요.</div>`}</div>`;
+}
+// 문제 화면: 서버에서 그 기록의 문제(닫힌 회차도)를 받아 지문·문제·보기 위에 학생 답과 정답을 표시한다. S.rv[id] = { status, r, content, err }
+async function loadRecord(id) {
+  if (!id || (S.rv[id] && S.rv[id].status !== 'err')) return;
+  S.rv[id] = { status: 'loading' }; render();
+  try { const j = await call('adminResult', { id }); S.rv[id] = { status: 'ok', r: j.result, content: j.content }; }
+  catch (e) { S.rv[id] = { status: 'err', err: e.message }; }
+  render();
+}
+function recordScreen(a) {
+  const d = S.rv[a.id];
+  if (!d || d.status === 'loading') return `<div class="tablebox"><div class="empty">문제를 불러오는 중…</div></div>`;
+  if (d.status === 'err') return `<div class="banner bad">${esc(d.err)} <button class="btn small" data-act="rvRetry" data-id="${esc(a.id)}">다시 시도</button></div>`;
+  if (S.onlyWrong && !d.r.rows.some(x => !x.ok)) return `<div class="tablebox"><div class="empty">틀린 문항이 없어요.</div></div>`;
+  const V = { r: d.r, content: d.content, onlyWrong: S.onlyWrong, seen: new Set() };
+  const body = !V.content ? '' : V.r.lc ? lcReviewItems(V, () => '') : V.r.practice ? wordsReviewBody(V) : rcReviewBody(V);
+  // 문제를 못 찾았거나 문제가 바뀌어 못 그린 문항은 표로
+  const rest = V.r.rows.filter(x => !V.seen.has(x.k));
+  return `<div class="stack rvadmin">${body}${rest.some(x => !S.onlyWrong || !x.ok) ? `<p class="note" style="margin:0">${V.content ? '문제가 바뀌어서 아래 문항은 표로만 보여 줘요.' : '이 회차의 문제를 찾을 수 없어서 표로만 보여 줘요.'}</p>${answerTable(rest)}` : ''}</div>`;
 }
 
 function viewSettings() {
@@ -433,7 +461,9 @@ document.addEventListener('click', ev => {
   }
   else if (act === 'reload') loadResults();
   else if (act === 'auUpload') uploadAudio();
-  else if (act === 'sel') { S.sel = S.sel === b.dataset.id ? null : b.dataset.id; render(); }
+  else if (act === 'sel') { S.sel = S.sel === b.dataset.id ? null : b.dataset.id; render(); if (S.sel && S.rvMode === 'screen') loadRecord(S.sel); }
+  else if (act === 'rvMode') { S.rvMode = b.dataset.k; render(); if (S.rvMode === 'screen') loadRecord(S.sel); }
+  else if (act === 'rvRetry') loadRecord(b.dataset.id);
   else if (act === 'delAsk') { const a = S.results.find(x => x.id === b.dataset.id);
     S.confirm = { title: '기록을 지울까요?', text: `${a.name} · ${testLabel(a)} ${modLabel(a)} · ${a.score}/${a.total} 기록이 시트에서도 지워져요. 되돌릴 수 없어요.`, label: '지우기', fn: () => run('del', async () => { await call('deleteResult', { id: a.id }); S.results = S.results.filter(x => x.id !== a.id); if (S.sel === a.id) S.sel = null; flash('ok', '지웠어요.'); }) }; render(); }
   else if (act === 'delTestAsk') { const id = +b.dataset.id;
