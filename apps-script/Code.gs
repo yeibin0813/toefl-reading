@@ -256,7 +256,10 @@ const API = {
         if (xidx[id]) xs.getRange(xidx[id], 1, 1, line.length).setValues([line]); else xfresh.push(line);
         explained++;
       });
-      appendRows_(xs, xfresh);
+      // 새 줄은 한 번에 너무 많이 쓰지 않게 50만 자 안팎씩 나눠 붙인다
+      let batch = [], size = 0;
+      xfresh.forEach(line => { const n = line.slice(2).join('').length; if (batch.length && size + n > 500000) { appendRows_(xs, batch); batch = []; size = 0; } batch.push(line); size += n; });
+      appendRows_(xs, batch);
     });
     return { added, updated, explained, tests: allLc_().map(lcSummary_), ex: lcxCounts_() };
   },
