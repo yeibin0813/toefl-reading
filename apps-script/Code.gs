@@ -138,46 +138,33 @@ const API = {
   // 정답은 정답 공개가 켜져 있을 때만 보낸다. 빈칸 모아 풀기는 지금 열린 회차의 문항만 보여 준다.
   myResult(r) {
     checkCode_(r.code);
-    const who = who_(r), sheet = sheet_(SH.results), n = sheet.getLastRow() - 1, id = String(r.id || '');
-    const ids = id && n > 0 ? sheet.getRange(2, 14, n, 1).getValues() : [];
-    let at = -1;
-    for (let i = ids.length - 1; i >= 0; i--) if (String(ids[i][0]) === id) { at = i + 2; break; }
-    // 두 번 읽는 사이에 줄이 지워지거나 정렬됐을 수 있어서 그 줄의 기록 ID를 다시 확인한다
-    const row = at > 0 ? sheet.getRange(at, 1, 1, 16).getValues()[0] : null;
-    if (!row || String(row[13]) !== id || !mine_(who, row[1], row[15])) throw new Error('기록을 찾을 수 없어요. 다시 시도해 주세요.');
-    let d = null; try { d = JSON.parse(row[12]); } catch (e) {}
-    d = d || {};
-    // 회차 칸보다 상세 칸이 정확하다 (리스닝 회차 ID, 모듈, 섹션)
-    const info = labelInfo_(row[2]), open = openNow_();
-    if (d.lc && d.lc.id) info.lc = { id: String(d.lc.id), title: String(d.lc.title || '') };
-    if (d.practice) info.practice = d.practice;
-    if (d.module === 0 || d.module === 1) info.module = d.module;
-    if (Array.isArray(d.secs)) info.secs = d.secs;
-    const rec = Object.assign(info, { id, name: String(row[1]).trim(), finishedAt: time_(row[0]), used: Array.isArray(d.used) ? d.used : [], limit: Number(d.limit) || 0 });
-    if (!recOpen_(info, open)) return { result: Object.assign(rec, { hidden: true, score: null, total: Number(row[4]) || 0, parts: {}, rows: [] }), showAnswers: false, content: null };
-    let rows = Array.isArray(d.rows) ? d.rows : [], content = null, cut = 0;
-    if (info.practice) {
+    const who = who_(r), f = findRecord_(r.id);
+    if (!f || !mine_(who, f.row[1], f.row[15])) throw new Error('기록을 찾을 수 없어요. 다시 시도해 주세요.');
+    const row = f.row, d = f.d, rec = f.rec, open = openNow_();
+    const hidden = () => ({ result: Object.assign(rec, { hidden: true, score: null, total: Number(row[4]) || 0, parts: {}, rows: [] }), showAnswers: false, content: null });
+    if (!recOpen_(rec, open)) return hidden();
+    let rows = Array.isArray(d.rows) ? d.rows : [], cut = 0;
+    if (rec.practice) {
       const before = rows.length;
       rows = rows.filter(x => !open.rc || open.rc.has(Number(x.t)));
       cut = before - rows.length;
       // 고른 회차가 지금 모두 닫혔으면 닫힌 회차 기록처럼 숨긴다
-      if (!rows.length) return { result: Object.assign(rec, { hidden: true, score: null, total: Number(row[4]) || 0, parts: {}, rows: [] }), showAnswers: false, content: null };
+      if (!rows.length) return hidden();
       if (cut) rec.orig = { score: Number(row[3]) || 0, total: Number(row[4]) || 0 };
-      const tests = testsById_(rows.map(x => x.t)), sets = [], has = new Set(rows.map(x => x.k));
-      Object.keys(tests).map(Number).sort((a, b) => a - b).forEach(tid => tests[tid].modules.forEach((m, mi) => m.sets.forEach(s => {
-        if (s.type === 'words' && blanks_(s).some(b => has.has(tid + '-' + mi + '-' + b.n))) sets.push({ t: tid, mi, start: s.start, text: wordsText_(s) });
-      })));
-      content = sets.length ? { sets } : null;
-    } else if (info.lc) {
-      const t = loadLc_(info.lc.id);
-      content = t ? { test: stripLc_(t), extra: open.showAnswers ? lcExtraFor_(t, rows) : null } : null;
-    } else if (info.testId != null) {
-      const t = testsById_([info.testId])[info.testId];
-      content = t ? { test: stripAnswers_(t) } : null;
     }
+    const content = reviewContent_(rec, rows, open);
     if (!open.showAnswers) rows = rows.map(x => ({ k: x.k, t: x.t, mi: x.mi, n: x.n, kind: x.kind, type: x.type, given: x.given, ok: x.ok }));
     const score = rows.filter(x => x.ok).length;
-    return { result: Object.assign(rec, { score, total: rows.length, parts: partsOf_(rows, !!info.practice), rows, cut }), showAnswers: open.showAnswers, content };
+    return { result: Object.assign(rec, { score, total: rows.length, parts: partsOf_(rows, !!rec.practice), rows, cut }), showAnswers: open.showAnswers, content };
+  },
+  // 관리자: 어떤 기록이든 문제와 함께 (닫힌 회차도, 정답과 리스닝 해설까지)
+  adminResult(r) {
+    checkPw_(r.pw);
+    const f = findRecord_(r.id);
+    if (!f) throw new Error('기록을 찾을 수 없어요. 새로고침해 주세요.');
+    const rows = Array.isArray(f.d.rows) ? f.d.rows : [];
+    return { result: Object.assign(f.rec, { score: rows.filter(x => x.ok).length, total: rows.length, parts: partsOf_(rows, !!f.rec.practice), rows, cut: 0 }),
+      showAnswers: true, content: reviewContent_(f.rec, rows, null) };
   },
 
   // ---------- 관리자 ----------
@@ -502,6 +489,47 @@ function lcExtraFor_(t, rows) {
     qs.forEach(x => { const k = mi + '-' + x.n; if (ex.q[k]) q[k] = ex.q[k]; });
   }));
   return Object.keys(q).length ? { i, q } : null;
+}
+// 기록 ID로 결과 시트의 그 줄을 찾는다. 없으면 null. { row: 시트 줄, d: 상세 칸 JSON, rec: 기록 정보 }
+function findRecord_(id) {
+  id = String(id || '');
+  const sheet = sheet_(SH.results), n = sheet.getLastRow() - 1;
+  const ids = id && n > 0 ? sheet.getRange(2, 14, n, 1).getValues() : [];
+  let at = -1;
+  for (let i = ids.length - 1; i >= 0; i--) if (String(ids[i][0]) === id) { at = i + 2; break; }
+  // 두 번 읽는 사이에 줄이 지워지거나 정렬됐을 수 있어서 그 줄의 기록 ID를 다시 확인한다
+  const row = at > 0 ? sheet.getRange(at, 1, 1, 16).getValues()[0] : null;
+  if (!row || String(row[13]) !== id) return null;
+  let d = null; try { d = JSON.parse(row[12]); } catch (e) {}
+  d = d || {};
+  // 회차 칸보다 상세 칸이 정확하다 (리스닝 회차 ID, 모듈, 섹션)
+  const rec = labelInfo_(row[2]);
+  if (d.lc && d.lc.id) rec.lc = { id: String(d.lc.id), title: String(d.lc.title || '') };
+  if (d.practice) rec.practice = d.practice;
+  if (d.module === 0 || d.module === 1) rec.module = d.module;
+  if (Array.isArray(d.secs)) rec.secs = d.secs;
+  Object.assign(rec, { id, name: String(row[1]).trim(), finishedAt: time_(row[0]), used: Array.isArray(d.used) ? d.used : [], limit: Number(d.limit) || 0 });
+  return { row, d, rec };
+}
+// 다시 보기에 보낼 문제 (정답은 뺀다). 빈칸 모아 풀기는 rows에 있는 빈칸 지문만.
+// 리스닝 해설은 관리자(open 없음)에게는 늘, 학생에게는 정답 공개일 때만 보낸다.
+function reviewContent_(rec, rows, open) {
+  if (rec.practice) {
+    const tests = testsById_(rows.map(x => x.t)), sets = [], has = new Set(rows.map(x => x.k));
+    Object.keys(tests).map(Number).sort((a, b) => a - b).forEach(tid => tests[tid].modules.forEach((m, mi) => m.sets.forEach(s => {
+      if (s.type === 'words' && blanks_(s).some(b => has.has(tid + '-' + mi + '-' + b.n))) sets.push({ t: tid, mi, start: s.start, text: wordsText_(s) });
+    })));
+    return sets.length ? { sets } : null;
+  }
+  if (rec.lc) {
+    const t = loadLc_(rec.lc.id);
+    return t ? { test: stripLc_(t), extra: !open || open.showAnswers ? lcExtraFor_(t, rows) : null } : null;
+  }
+  if (rec.testId != null) {
+    const t = testsById_([rec.testId])[rec.testId];
+    return t ? { test: stripAnswers_(t) } : null;
+  }
+  return null;
 }
 // 관리자 목록에 보일 회차별 해설 수
 function lcxCounts_() {
